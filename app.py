@@ -8,7 +8,13 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# Import our ABM model logic
+# Imports for file handling and date/time
+import os
+from pathlib import Path
+from datetime import datetime
+import json
+
+# Import ABM model logic
 from model import PeatlandABM, run_simulation
 
 # Set web page title and layout
@@ -16,7 +22,7 @@ st.set_page_config(page_title="Peatland ABM", layout="wide")
 
 # Title and description
 st.title("Peatland ABM — Agent-Based Modeling Demo")
-st.write("This minimal agent-based model simulates how farmers on Dutch peatlands may adopt nature-inclusive practices under different policy scenarios.")
+st.write("This minimal agent-based model simulates how farmers adopt sutainable practices based on simplified policy, economic and social aspects.")
 
 # Sidebar: model parameters
 with st.sidebar:
@@ -50,12 +56,65 @@ if st.button("Run Simulation"):
     results["adoption_rate_ma10"] = results["adoption_rate"].rolling(window=10).mean()
     results["avg_emissions_ma10"] = results["avg_emissions"].rolling(window=10).mean()
 
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = Path(f"outputs/run_{timestamp}")    
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create metadata dictionary
+    metadata = {
+        "timestamp": timestamp,
+        "parameters": {
+            "n_agents": n_agents,
+            "steps": steps,
+            "seed": seed,
+            "subsidy": subsidy,
+            "profit_diff": profit_diff,
+            "peer_weight": peer_weight
+        },
+        "results_summary": {
+            "final_adoption_rate": float(results["adoption_rate"].iloc[-1]),
+            "final_emissions": float(results["avg_emissions"].iloc[-1]),
+            "mean_adoption_rate": float(results["adoption_rate"].mean()),
+            "mean_emissions": float(results["avg_emissions"].mean())
+        },
+        "metrics": list(results.columns),
+        "files_generated": [
+            "abm_results.csv",
+            "metadata.json",
+            "metadata.txt",
+            "adoption_plot.png",
+            "emissions_plot.png"
+        ]
+    }
+
+    # Save metadata as JSON
+    with open(output_dir / "metadata.json", "w") as f:
+        json.dump(metadata, f, indent=4)
+
+    # Save metadata as TXT
+    with open(output_dir / "metadata.txt", "w") as f:
+        f.write("Peatland ABM Simulation Metadata\n")
+        f.write("=" * 30 + "\n\n")
+        f.write(f"Timestamp: {timestamp}\n\n")
+        f.write("Parameters:\n")
+        for param, value in metadata["parameters"].items():
+            f.write(f"- {param}: {value}\n")
+        f.write("\nResults Summary:\n")
+        for metric, value in metadata["results_summary"].items():
+            f.write(f"- {metric}: {value:.4f}\n")
+        f.write("\nMetrics Saved:\n")
+        for metric in metadata["metrics"]:
+            f.write(f"- {metric}\n")
+        f.write("\nFiles Generated:\n")
+        for file in metadata["files_generated"]:
+            f.write(f"- {file}\n")
+
     # Save results to CSV
-    results.to_csv("abm_results.csv", index=False)
+    results.to_csv(output_dir / "abm_results.csv", index=False)
 
     # Display results table
-    st.subheader("Simulation Output (first 5 rows)")
-    st.dataframe(results.head())
+    st.subheader("Simulation Output (first 2 rows)")
+    st.dataframe(results.head(2))
 
     # Plot adoption rate
     st.subheader("Adoption Rate Over Time")
@@ -65,6 +124,7 @@ if st.button("Run Simulation"):
     ax.set_ylabel("Share of Adopters")
     ax.legend()
     st.pyplot(fig)
+    fig.savefig(output_dir / "adoption_plot.png")  # Save to local file
 
     # Plot emissions
     st.subheader("Average Emissions Over Time")
@@ -74,8 +134,11 @@ if st.button("Run Simulation"):
     ax2.set_ylabel("Avg Emissions")
     ax2.legend()
     st.pyplot(fig2)
+    fig2.savefig(output_dir / "emissions_plot.png")  # Save to local file
 
     # CSV download button
     st.download_button("Download Results CSV", data=results.to_csv(index=False), file_name="abm_results.csv")
+
+
 else:
     st.info("Set parameters and click Run Simulation.")

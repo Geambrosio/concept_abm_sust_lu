@@ -46,6 +46,13 @@ if st.button("Run Simulation"):
     # Run simulation for the number of steps
     results = run_simulation(model, steps)
 
+    # Calculate moving averages for smoother plots
+    results["adoption_rate_ma10"] = results["adoption_rate"].rolling(window=10).mean()
+    results["avg_emissions_ma10"] = results["avg_emissions"].rolling(window=10).mean()
+
+    # Save results to CSV
+    results.to_csv("abm_results.csv", index=False)
+
     # Display results table
     st.subheader("Simulation Output (first 5 rows)")
     st.dataframe(results.head())

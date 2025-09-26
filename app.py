@@ -34,17 +34,18 @@ with st.sidebar:
     seed = st.number_input("Random seed", value=42, step=1)
 
     # Economic and social parameters
-    subsidy = st.slider("Subsidy for adoption", min_value=0.0, max_value=5.0, value=1.0, step=0.1)
-    profit_diff = st.slider("Profit difference (conventional - nature-inclusive)", -2.0, 2.0, 0.5, 0.1)
-    peer_weight = st.slider("Peer influence weight", 0.0, 1.0, 0.3, 0.05)
+    subsidy_eur_per_ha = st.slider("Subsidy for adoption (EUR/ha/year)", min_value=0.0, max_value=500.0, value=100.0, step=10.0)
+    profit_diff_eur_per_ha = st.slider("Profit difference (conventional - nature-inclusive, EUR/ha/year)", -200.0, 200.0, 50.0, 10.0)
+    peer_weight = st.slider("Peer influence weight (0-1)", 0.0, 1.0, 0.3, 0.05)
 
 # Run button
+
 if st.button("Run Simulation"):
-    # Initialize model
+    # Initialize model with real units
     model = PeatlandABM(
         n_agents=n_agents,
-        subsidy=subsidy,
-        profit_diff=profit_diff,
+        subsidy_eur_per_ha=subsidy_eur_per_ha,
+        profit_diff_eur_per_ha=profit_diff_eur_per_ha,
         peer_weight=peer_weight,
         seed=seed
     )
@@ -54,7 +55,7 @@ if st.button("Run Simulation"):
 
     # Calculate moving averages for smoother plots
     results["adoption_rate_ma10"] = results["adoption_rate"].rolling(window=10).mean()
-    results["avg_emissions_ma10"] = results["avg_emissions"].rolling(window=10).mean()
+    results["avg_emissions_ma10"] = results["avg_emissions_tCO2_ha"].rolling(window=10).mean()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(f"outputs/run_{timestamp}")    
@@ -67,15 +68,15 @@ if st.button("Run Simulation"):
             "n_agents": n_agents,
             "steps": steps,
             "seed": seed,
-            "subsidy": subsidy,
-            "profit_diff": profit_diff,
+            "subsidy_eur_per_ha": subsidy_eur_per_ha,
+            "profit_diff_eur_per_ha": profit_diff_eur_per_ha,
             "peer_weight": peer_weight
         },
         "results_summary": {
             "final_adoption_rate": float(results["adoption_rate"].iloc[-1]),
-            "final_emissions": float(results["avg_emissions"].iloc[-1]),
+            "final_emissions_tCO2_ha": float(results["avg_emissions_tCO2_ha"].iloc[-1]),
             "mean_adoption_rate": float(results["adoption_rate"].mean()),
-            "mean_emissions": float(results["avg_emissions"].mean())
+            "mean_emissions_tCO2_ha": float(results["avg_emissions_tCO2_ha"].mean())
         },
         "metrics": list(results.columns),
         "files_generated": [
@@ -96,10 +97,10 @@ if st.button("Run Simulation"):
         f.write("Peatland ABM Simulation Metadata\n")
         f.write("=" * 30 + "\n\n")
         f.write(f"Timestamp: {timestamp}\n\n")
-        f.write("Parameters:\n")
+        f.write("Parameters (real units):\n")
         for param, value in metadata["parameters"].items():
             f.write(f"- {param}: {value}\n")
-        f.write("\nResults Summary:\n")
+        f.write("\nResults Summary (real units):\n")
         for metric, value in metadata["results_summary"].items():
             f.write(f"- {metric}: {value:.4f}\n")
         f.write("\nMetrics Saved:\n")
@@ -123,21 +124,21 @@ if st.button("Run Simulation"):
     slope, intercept = np.polyfit(results['step'], results['adoption_rate'], 1)
     ax.plot(results['step'], slope * results["step"] + intercept, linestyle="--", color="black", label="Trend")
     ax.plot(results['step'], results['adoption_rate'], label="Adoption Rate", color='blue')
-    ax.set_xlabel("step")
+    ax.set_xlabel("Step")
     ax.set_ylabel("Share of Adopters")
     ax.legend()
     st.pyplot(fig)
     fig.savefig(output_dir / "adoption_plot.png")  # Save to local file
 
-    # Plot emissions
-    st.subheader("Average Emissions Over Time")
+    # Plot emissions (t CO2-eq/ha/year)
+    st.subheader("Average Emissions Over Time (t CO₂-eq/ha/year)")
     fig2, ax2 = plt.subplots()
     # Calculate trend line (slope & intercept)
-    slope, intercept = np.polyfit(results['step'], results['avg_emissions'], 1)
+    slope, intercept = np.polyfit(results['step'], results['avg_emissions_tCO2_ha'], 1)
     ax2.plot(results['step'], slope * results["step"] + intercept, linestyle="--", color="black", label="Trend")
-    ax2.plot(results['step'], results['avg_emissions'], label="Emissions", color='red')
-    ax2.set_xlabel("step")
-    ax2.set_ylabel("Avg Emissions")
+    ax2.plot(results['step'], results['avg_emissions_tCO2_ha'], label="Emissions", color='red')
+    ax2.set_xlabel("Step")
+    ax2.set_ylabel("Avg Emissions (t CO₂-eq/ha/year)")
     ax2.legend()
     st.pyplot(fig2)
     fig2.savefig(output_dir / "emissions_plot.png")  # Save to local file

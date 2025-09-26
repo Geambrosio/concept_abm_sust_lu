@@ -6,17 +6,19 @@ import numpy as np
 import pandas as pd
 
 # Define ABM class
+
 class PeatlandABM:
     """
-    A minimal agent-based model where each agent (farmer) decides whether to adopt
+    Agent-based model where each agent (farmer) decides whether to adopt
     a nature-inclusive practice based on economic and peer influence.
+    Uses real units for emissions (t CO2-eq/ha/year) and monetary values (EUR/ha/year).
     """
 
-    def __init__(self, n_agents=100, subsidy=1.0, profit_diff=0.5, peer_weight=0.3, seed=42):
-        self.n = n_agents                     # Number of agents (farmers)
-        self.subsidy = subsidy               # Subsidy paid to adopters
-        self.profit_diff = profit_diff       # Profit advantage of conventional farming
-        self.peer_weight = peer_weight       # Importance of neighbors' choices
+    def __init__(self, n_agents=100, subsidy_eur_per_ha=100.0, profit_diff_eur_per_ha=50.0, peer_weight=0.3, seed=42):
+        self.n = n_agents  # Number of agents (farmers)
+        self.subsidy_eur_per_ha = subsidy_eur_per_ha  # Subsidy paid to adopters (EUR/ha/year)
+        self.profit_diff_eur_per_ha = profit_diff_eur_per_ha  # Profit advantage of conventional (EUR/ha/year)
+        self.peer_weight = peer_weight  # Importance of neighbors' choices
         self.rng = np.random.default_rng(seed)  # Random generator for reproducibility
 
         # Initialize 10% of farmers as adopters
@@ -29,23 +31,25 @@ class PeatlandABM:
         # Calculate average adoption in the population (as a peer proxy)
         peer_share = np.mean(self.adopt)
 
-        # Calculate adoption utility:
+        # Calculate adoption utility (EUR/ha/year):
         # If utility > 0, more likely to adopt
-        utility = self.subsidy - self.profit_diff + self.peer_weight * peer_share
+        utility = self.subsidy_eur_per_ha - self.profit_diff_eur_per_ha + self.peer_weight * peer_share * 100  # peer effect scaled
 
         # Logistic transformation: maps utility to [0,1] probability
-        prob = 1 / (1 + np.exp(-utility))
+        prob = 1 / (1 + np.exp(-utility / 100.0))  # scale utility for probability
 
         # Each farmer adopts with probability 'prob'
         self.adopt = self.rng.binomial(1, prob, size=self.n)
 
-        # Emissions: adopters emit less
-        emis = 5.0 * (1 - 0.5 * self.adopt)  # baseline 5.0, reduced by 50% for adopters
+        # Emissions: adopters emit less (t CO2-eq/ha/year)
+        emis = 5.0 * (1 - 0.5 * self.adopt)  # non-adopter: 5, adopter: 2.5
 
         # Return stats
         return {
             "adoption_rate": float(np.mean(self.adopt)),
-            "avg_emissions": float(np.mean(emis))
+            "avg_emissions_tCO2_ha": float(np.mean(emis)),
+            "subsidy_eur_per_ha": self.subsidy_eur_per_ha,
+            "profit_diff_eur_per_ha": self.profit_diff_eur_per_ha
         }
 
 # Run the model over multiple time steps

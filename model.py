@@ -21,6 +21,14 @@ class PeatlandABM:
         self.peer_weight = peer_weight  # Importance of neighbors' choices
         self.rng = np.random.default_rng(seed)  # Random generator for reproducibility
 
+        # Assign farmer types: 50% profit-driven, 50% social-driven
+        types = self.rng.choice(["profit", "social"], size=self.n)
+
+        # Store as arrays of weights
+        self.profit_weights = np.where(types == "profit", 1.5, 0.5)   # profit-driven care more
+        self.peer_weights   = np.where(types == "social", 1.5, 0.5)   # social-driven care more
+
+
         # Initialize 10% of farmers as adopters
         self.adopt = self.rng.binomial(1, 0.1, size=self.n)
 
@@ -33,7 +41,7 @@ class PeatlandABM:
 
         # Calculate adoption utility (EUR/ha/year):
         # If utility > 0, more likely to adopt
-        utility = self.subsidy_eur_per_ha - self.profit_diff_eur_per_ha + self.peer_weight * peer_share * 100  # peer effect scaled
+        utility = self.subsidy_eur_per_ha - self.profit_weights * self.profit_diff_eur_per_ha + self.peer_weights * peer_share * 100  # peer effect scaled
 
         # Logistic transformation: maps utility to [0,1] probability
         prob = 1 / (1 + np.exp(-utility / 100.0))  # scale utility for probability

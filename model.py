@@ -47,7 +47,7 @@ class PeatlandABM:
         prob = 1 / (1 + np.exp(-utility / 100.0))  # scale utility for probability
 
         # Each farmer adopts with probability 'prob'
-        self.adopt = self.rng.binomial(1, prob, size=self.n)
+        self.adopt = self.rng.binomial(1, prob)
 
         # Emissions: adopters emit less (t CO2-eq/ha/year)
         emis = 5.0 * (1 - 0.5 * self.adopt)  # non-adopter: 5, adopter: 2.5

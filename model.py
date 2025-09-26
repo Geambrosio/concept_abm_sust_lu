@@ -44,12 +44,27 @@ class PeatlandABM:
         # Emissions: adopters emit less (t CO2-eq/ha/year)
         emis = 5.0 * (1 - 0.5 * self.adopt)  # non-adopter: 5, adopter: 2.5
 
-        # Return stats
+        # New: compute policy cost & cost-effectiveness (per ha)
+        baseline = 5.0  # t CO2-eq/ha/year under conventional
+        adoption_rate = float(np.mean(self.adopt))
+        avg_emiss = float(np.mean(emis))
+        emisssions_reduced = max(baseline - avg_emiss, 0.0) # t CO2-eq/ha/year reduced never negative
+        
+        policy_cost_per_ha = self.subsidy_eur_per_ha * adoption_rate  # EUR/ha/year
+
+        if emisssions_reduced > 0:
+            cost_per_tonne  = policy_cost_per_ha / emisssions_reduced  # EUR per t CO2-eq reduced
+        else:
+            cost_per_tonne  = float('Nan')  # Avoid division by zero
+        
         return {
             "adoption_rate": float(np.mean(self.adopt)),
             "avg_emissions_tCO2_ha": float(np.mean(emis)),
             "subsidy_eur_per_ha": self.subsidy_eur_per_ha,
-            "profit_diff_eur_per_ha": self.profit_diff_eur_per_ha
+            "profit_diff_eur_per_ha": self.profit_diff_eur_per_ha,
+            "emissions_saved_tCO2_ha": emisssions_reduced,
+            "policy_cost_eur_per_ha": policy_cost_per_ha,
+            "cost_per_tonne_eur_per_tCO2": cost_per_tonne,
         }
 
 # Run the model over multiple time steps

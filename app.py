@@ -53,6 +53,14 @@ if st.button("Run Simulation"):
     # Run simulation for the number of steps
     results = run_simulation(model, steps)
 
+    # Cumulative (assumes each step ~ 1 year)
+    results["cum_policy_cost_eur_per_ha"] = results["policy_cost_eur_per_ha"].cumsum()
+    results["cum_emissions_saved_tCO2_ha"] = results["emissions_saved_tCO2_ha"].cumsum()
+    results["cum_cost_per_tonne_eur_per_tCO2"] = (
+        results["cum_policy_cost_eur_per_ha"] / results["cum_emissions_saved_tCO2_ha"].replace(0, np.nan)
+    )
+
+
     # Calculate moving averages for smoother plots
     results["adoption_rate_ma10"] = results["adoption_rate"].rolling(window=10).mean()
     results["avg_emissions_ma10"] = results["avg_emissions_tCO2_ha"].rolling(window=10).mean()
@@ -76,7 +84,9 @@ if st.button("Run Simulation"):
             "final_adoption_rate": float(results["adoption_rate"].iloc[-1]),
             "final_emissions_tCO2_ha": float(results["avg_emissions_tCO2_ha"].iloc[-1]),
             "mean_adoption_rate": float(results["adoption_rate"].mean()),
-            "mean_emissions_tCO2_ha": float(results["avg_emissions_tCO2_ha"].mean())
+            "mean_emissions_tCO2_ha": float(results["avg_emissions_tCO2_ha"].mean()),
+            "final_cost_per_tonne_eur_per_tCO2": float(results["cost_per_tonne_eur_per_tCO2"].iloc[-1]),
+            "cumulative_cost_per_tonne_eur_per_tCO2": float(results["cum_cost_per_tonne_eur_per_tCO2"].iloc[-1])
         },
         "metrics": list(results.columns),
         "files_generated": [
@@ -84,7 +94,8 @@ if st.button("Run Simulation"):
             "metadata.json",
             "metadata.txt",
             "adoption_plot.png",
-            "emissions_plot.png"
+            "emissions_plot.png",
+            "cost_per_tonne_plot.png"
         ]
     }
 
@@ -117,6 +128,13 @@ if st.button("Run Simulation"):
     st.subheader("Simulation Output (first 2 rows)")
     st.dataframe(results.head(2))
 
+    st.subheader("Key policy metric")
+    col1, col2 = st.columns(2)
+    col1.metric("Final cost per tCO₂ saved",
+                f"{results['cost_per_tonne_eur_per_tCO2'].iloc[-1]:.0f} EUR/tCO₂")
+    col2.metric("Cumulative cost per tCO₂ saved",
+                f"{results['cum_cost_per_tonne_eur_per_tCO2'].iloc[-1]:.0f} EUR/tCO₂")
+
     # Plot adoption rate
     st.subheader("Adoption Rate Over Time")
     fig, ax = plt.subplots()
@@ -142,6 +160,17 @@ if st.button("Run Simulation"):
     ax2.legend()
     st.pyplot(fig2)
     fig2.savefig(output_dir / "emissions_plot.png")  # Save to local file
+
+    st.subheader("Cost per tCO₂ saved over time")
+    fig3, ax3 = plt.subplots()
+    ax3.plot(results["step"], results["cost_per_tonne_eur_per_tCO2"], label="Per-step EUR/tCO₂", color="orange")
+    ax3.plot(results["step"], results["cum_cost_per_tonne_eur_per_tCO2"], linestyle="--", label="Cumulative EUR/tCO₂", color="black")
+    ax3.set_xlabel("Step")
+    ax3.set_ylabel("EUR per tCO₂ saved")
+    ax3.legend()
+    st.pyplot(fig3)
+    fig3.savefig(output_dir / "cost_per_tonne_plot.png")
+    st.write("Note: Cumulative cost per tCO₂ can be very high initially when few emissions are saved.")
 
     # CSV download button
     st.download_button("Download Results CSV", data=results.to_csv(index=False), file_name="abm_results.csv")

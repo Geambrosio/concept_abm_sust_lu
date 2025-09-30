@@ -14,20 +14,24 @@ class PeatlandABM:
     Uses real units for emissions (t CO2-eq/ha/year) and monetary values (EUR/ha/year).
     """
 
-    def __init__(self, n_agents=100, subsidy_eur_per_ha=100.0, profit_diff_eur_per_ha=50.0, peer_weight=0.3, seed=42):
+    def __init__(self, n_agents=100, subsidy_eur_per_ha=100.0, profit_diff_eur_per_ha=50.0, peer_weight=0.3, seed=42, stay_adopter_prob=0.9, hetero_persistence=False):
         self.n = n_agents  # Number of agents (farmers)
         self.subsidy_eur_per_ha = subsidy_eur_per_ha  # Subsidy paid to adopters (EUR/ha/year)
         self.profit_diff_eur_per_ha = profit_diff_eur_per_ha  # Profit advantage of conventional (EUR/ha/year)
         self.peer_weight = peer_weight  # Importance of neighbors' choices
         self.rng = np.random.default_rng(seed)  # Random generator for reproducibility
+        self.stay_adopter_prob = stay_adopter_prob  # Probability to remain adopter if already adopted
 
-        # Assign farmer types: 50% profit-driven, 50% social-driven
-        types = self.rng.choice(["profit", "social"], size=self.n)
+        if hetero_persistence:
+            self.stay_adopter_probs = self.rng.uniform(0.7, 0.99, size=self.n)
+        else:
+            self.stay_adopter_probs = np.full(self.n, stay_adopter_prob)
 
-        # Store as arrays of weights
-        self.profit_weights = np.where(types == "profit", 1.5, 0.5)   # profit-driven care more
-        self.peer_weights   = np.where(types == "social", 1.5, 0.5)   # social-driven care more
-
+        # Randomize profit and peer weights for each agent for more heterogeneity
+        # Profit weights: between 0.5 and 2.0 (higher = more profit-driven)
+        self.profit_weights = self.rng.uniform(0.5, 2.0, size=self.n)
+        # Peer weights: between 0.5 and 2.0 (higher = more peer-driven)
+        self.peer_weights = self.rng.uniform(0.5, 2.0, size=self.n)
 
         # Initialize 10% of farmers as adopters
         self.adopt = self.rng.binomial(1, 0.1, size=self.n)
@@ -47,7 +51,11 @@ class PeatlandABM:
         prob = 1 / (1 + np.exp(-utility / 100.0))  # scale utility for probability
 
         # Each farmer adopts with probability 'prob'
-        self.adopt = self.rng.binomial(1, prob)
+        new_adopt = self.rng.binomial(1, prob)
+        for i in range(self.n):
+            if self.adopt[i] == 1 and self.rng.random() < self.stay_adopter_probs[i]:
+                new_adopt[i] = 1
+        self.adopt = new_adopt
 
         # Emissions: adopters emit less (t CO2-eq/ha/year)
         emis = 5.0 * (1 - 0.5 * self.adopt)  # non-adopter: 5, adopter: 2.5
@@ -57,14 +65,16 @@ class PeatlandABM:
         adoption_rate = float(np.mean(self.adopt))
         avg_emiss = float(np.mean(emis))
         emisssions_reduced = max(baseline - avg_emiss, 0.0) # t CO2-eq/ha/year reduced never negative
-        
+
         policy_cost_per_ha = self.subsidy_eur_per_ha * adoption_rate  # EUR/ha/year
 
-        if emisssions_reduced > 0:
+        # Set a threshold to avoid division by very small numbers
+        threshold = 0.01
+        if emisssions_reduced > threshold:
             cost_per_tonne  = policy_cost_per_ha / emisssions_reduced  # EUR per t CO2-eq reduced
         else:
-            cost_per_tonne  = float('Nan')  # Avoid division by zero
-        
+            cost_per_tonne  = float('nan')  # Avoid division by zero or near-zero
+
         return {
             "adoption_rate": float(np.mean(self.adopt)),
             "avg_emissions_tCO2_ha": float(np.mean(emis)),

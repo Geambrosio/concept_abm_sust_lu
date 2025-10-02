@@ -14,13 +14,14 @@ class PeatlandABM:
     Uses real units for emissions (t CO2-eq/ha/year) and monetary values (EUR/ha/year).
     """
 
-    def __init__(self, n_agents=100, subsidy_eur_per_ha=100.0, profit_diff_eur_per_ha=50.0, peer_weight=0.3, seed=42, stay_adopter_prob=0.9, hetero_persistence=False):
+    def __init__(self, n_agents=100, subsidy_eur_per_ha=100.0, profit_diff_eur_per_ha=50.0, peer_weight=0.3, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7):
         self.n = n_agents  # Number of agents (farmers)
         self.subsidy_eur_per_ha = subsidy_eur_per_ha  # Subsidy paid to adopters (EUR/ha/year)
         self.profit_diff_eur_per_ha = profit_diff_eur_per_ha  # Profit advantage of conventional (EUR/ha/year)
         self.peer_weight = peer_weight  # Importance of neighbors' choices
         self.rng = np.random.default_rng(seed)  # Random generator for reproducibility
         self.stay_adopter_prob = stay_adopter_prob  # Probability to remain adopter if already adopted
+        self.alpha = alpha  # Weight for economic vs social utility
 
         if hetero_persistence:
             self.stay_adopter_probs = self.rng.uniform(0.7, 0.99, size=self.n)
@@ -33,8 +34,8 @@ class PeatlandABM:
         # Peer weights: between 0.5 and 2.0 (higher = more peer-driven)
         self.peer_weights = self.rng.uniform(0.5, 2.0, size=self.n)
 
-        # Initialize 10% of farmers as adopters
-        self.adopt = self.rng.binomial(1, 0.1, size=self.n)
+        # Initialize 5% of farmers as adopters
+        self.adopt = self.rng.binomial(1, 0.05, size=self.n)
 
     def step(self):
         """
@@ -43,9 +44,22 @@ class PeatlandABM:
         # Calculate average adoption in the population (as a peer proxy)
         peer_share = np.mean(self.adopt)
 
-        # Calculate adoption utility (EUR/ha/year):
-        # If utility > 0, more likely to adopt
-        utility = self.subsidy_eur_per_ha - self.profit_weights * self.profit_diff_eur_per_ha + self.peer_weights * peer_share * 100  # peer effect scaled
+        # Calculate raw economic utility (EUR/ha/year)
+        econ_utility_raw = self.subsidy_eur_per_ha - self.profit_weights * self.profit_diff_eur_per_ha
+        # Normalize economic utility to [0, 1]
+        econ_min = np.min(econ_utility_raw)
+        econ_max = np.max(econ_utility_raw)
+        econ_utility = (econ_utility_raw - econ_min) / (econ_max - econ_min + 1e-8)
+
+        # Calculate raw social utility (unitless)
+        social_utility_raw = self.peer_weights * peer_share
+        # Normalize social utility to [0, 1]
+        social_min = np.min(social_utility_raw)
+        social_max = np.max(social_utility_raw)
+        social_utility = (social_utility_raw - social_min) / (social_max - social_min + 1e-8)
+
+        # Combine with alpha
+        utility = self.alpha * econ_utility + (1 - self.alpha) * social_utility
 
         # Logistic transformation: maps utility to [0,1] probability
         prob = 1 / (1 + np.exp(-utility / 100.0))  # scale utility for probability

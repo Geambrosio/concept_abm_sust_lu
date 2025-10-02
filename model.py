@@ -61,6 +61,14 @@ class PeatlandABM:
         # Combine with alpha
         utility = self.alpha * econ_utility + (1 - self.alpha) * social_utility
 
+        # Store agent-level utility and mean utility
+        mean_utility = float(np.mean(utility))
+        utility_per_agent = utility.copy()  # This is a numpy array, one value per agent
+        mean_econ_utility = float(np.mean(econ_utility))
+        utility_econ_per_agent = econ_utility.copy()
+        mean_social_utility = float(np.mean(social_utility))
+        utility_social_per_agent = social_utility.copy()
+
         # Logistic transformation: maps utility to [0,1] probability
         prob = 1 / (1 + np.exp(-utility / 100.0))  # scale utility for probability
 
@@ -97,6 +105,12 @@ class PeatlandABM:
             "emissions_saved_tCO2_ha": emisssions_reduced,
             "policy_cost_eur_per_ha": policy_cost_per_ha,
             "cost_per_tonne_eur_per_tCO2": cost_per_tonne,
+            "mean_utility": mean_utility,
+            "utility_per_agent": utility_per_agent,  # numpy array
+            "mean_econ_utility": mean_econ_utility,
+            "utility_econ_per_agent": utility_econ_per_agent,
+            "mean_social_utility": mean_social_utility,
+            "utility_social_per_agent": utility_social_per_agent
         }
 
 # Run the model over multiple time steps

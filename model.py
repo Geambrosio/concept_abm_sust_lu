@@ -14,10 +14,18 @@ class PeatlandABM:
     Uses real units for emissions (t CO2-eq/ha/year) and monetary values (EUR/ha/year).
     """
 
-    def __init__(self, n_agents=100, subsidy_eur_per_ha=100.0, profit_diff_eur_per_ha=50.0, peer_weight=0.3, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7):
+    def __init__(self, n_agents=100, subsidy_eur_per_ha=100.0, profit_diff_eur_per_ha=50.0, peer_weight=0.3, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7, profit_diff_csv=None):
         self.n = n_agents  # Number of agents (farmers)
         self.subsidy_eur_per_ha = subsidy_eur_per_ha  # Subsidy paid to adopters (EUR/ha/year)
-        self.profit_diff_eur_per_ha = profit_diff_eur_per_ha  # Profit advantage of conventional (EUR/ha/year)
+        # Data-driven assignment: load agent-specific profit_diff from CSV if provided
+        if profit_diff_csv is not None:
+            df = pd.read_csv(profit_diff_csv)
+            # Expect a column 'profit_diff_eur_per_ha' with n_agents values
+            if len(df) < self.n:
+                raise ValueError(f"CSV file must have at least {self.n} rows for agent profit differences.")
+            self.profit_diff_eur_per_ha = df['profit_diff_eur_per_ha'].values[:self.n]
+        else:
+            self.profit_diff_eur_per_ha = np.full(self.n, profit_diff_eur_per_ha)
         self.peer_weight = peer_weight  # Importance of neighbors' choices
         self.rng = np.random.default_rng(seed)  # Random generator for reproducibility
         self.stay_adopter_prob = stay_adopter_prob  # Probability to remain adopter if already adopted
@@ -78,6 +86,20 @@ class PeatlandABM:
             if self.adopt[i] == 1 and self.rng.random() < self.stay_adopter_probs[i]:
                 new_adopt[i] = 1
         self.adopt = new_adopt
+        # Agent learning: update peer_weights based on observed peer adoption
+        learning_rate = 0.1  # You can tune this value
+        for i in range(self.n):
+            # Move peer_weight slightly toward current peer_share (bounded between 0.5 and 2.0)
+            self.peer_weights[i] += learning_rate * (peer_share - self.peer_weights[i])
+            self.peer_weights[i] = np.clip(self.peer_weights[i], 0.5, 2.0)
+
+        # Agent learning: update profit_weights based on economic experience
+        econ_learning_rate = 0.1  # Tune as needed
+        for i in range(self.n):
+            # If agent adopted, update profit_weight toward economic utility (bounded between 0.5 and 2.0)
+            if self.adopt[i] == 1:
+                self.profit_weights[i] += econ_learning_rate * (econ_utility[i] - self.profit_weights[i])
+                self.profit_weights[i] = np.clip(self.profit_weights[i], 0.5, 2.0)
 
         # Emissions: adopters emit less (t CO2-eq/ha/year)
         emis = 5.0 * (1 - 0.5 * self.adopt)  # non-adopter: 5, adopter: 2.5

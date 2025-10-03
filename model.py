@@ -34,10 +34,8 @@ class PeatlandABM:
         self.stay_adopter_prob = stay_adopter_prob  # Probability to remain adopter if already adopted
         self.alpha = alpha  # Weight for economic vs social utility
 
-        if hetero_persistence:
-            self.stay_adopter_probs = self.rng.uniform(0.7, 0.99, size=self.n)
-        else:
-            self.stay_adopter_probs = np.full(self.n, stay_adopter_prob)
+        # Always randomize stay_adopter_probs per agent
+        self.stay_adopter_probs = self.rng.uniform(0.7, 0.99, size=self.n)
 
         # Randomize profit and peer weights for each agent for more heterogeneity
         # Profit weights: between 0.5 and 2.0 (higher = more profit-driven)

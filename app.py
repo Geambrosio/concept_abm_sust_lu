@@ -40,7 +40,6 @@ with st.sidebar:
 if st.button("Run Simulation"):
     # Initialize model with real units
     model = PeatlandABM(
-        n_agents=n_agents,
         subsidy_eur_per_ha=subsidy_eur_per_ha,
         seed=seed
     )
@@ -68,7 +67,6 @@ if st.button("Run Simulation"):
     metadata = {
         "timestamp": timestamp,
         "parameters": {
-            "n_agents": n_agents,
             "steps": steps,
             "seed": seed,
             "subsidy_eur_per_ha": subsidy_eur_per_ha,
@@ -154,16 +152,16 @@ if st.button("Run Simulation"):
     st.pyplot(fig2)
     fig2.savefig(output_dir / "emissions_plot.png")  # Save to local file
 
-    st.subheader("Cost per tCO₂ saved over time")
+    st.subheader("Distribution of Agent Utility at Final Step")
+    final_utilities = results["utility_per_agent"].iloc[-1]
     fig3, ax3 = plt.subplots()
-    ax3.plot(results["step"], results["cost_per_tonne_eur_per_tCO2"], label="Per-step EUR/tCO₂", color="orange")
-    ax3.plot(results["step"], results["cum_cost_per_tonne_eur_per_tCO2"], linestyle="--", label="Cumulative EUR/tCO₂", color="black")
-    ax3.set_xlabel("Step")
-    ax3.set_ylabel("EUR per tCO₂ saved")
-    ax3.legend()
+    ax3.hist(final_utilities, bins=20, color="skyblue", edgecolor="black")
+    ax3.set_xlabel("Agent Utility (EUR/ha)")
+    ax3.set_ylabel("Number of Agents")
+    ax3.set_title("Utility Distribution at Final Step")
     st.pyplot(fig3)
-    fig3.savefig(output_dir / "cost_per_tonne_plot.png")
-    st.write("Note: Cumulative cost per tCO₂ can be very high initially when few emissions are saved.")
+    fig3.savefig(output_dir / "utility_histogram.png")
+    st.write("This histogram shows the spread of incentives across agents at the end of the simulation.")
 
     # CSV download button
     st.download_button("Download Results CSV", data=results.to_csv(index=False), file_name="abm_results.csv")

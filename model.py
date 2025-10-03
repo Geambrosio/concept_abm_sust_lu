@@ -14,18 +14,22 @@ class PeatlandABM:
     Uses real units for emissions (t CO2-eq/ha/year) and monetary values (EUR/ha/year).
     """
 
-    def __init__(self, n_agents=100, subsidy_eur_per_ha=100.0, profit_diff_eur_per_ha=50.0, peer_weight=0.3, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7, profit_diff_csv=None):
+    def __init__(self, n_agents=100, subsidy_eur_per_ha=100.0, peer_weight=0.3, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7, profits_csv='profits_agents.csv'):
         self.n = n_agents  # Number of agents (farmers)
         self.subsidy_eur_per_ha = subsidy_eur_per_ha  # Subsidy paid to adopters (EUR/ha/year)
-        # Data-driven assignment: load agent-specific profit_diff from CSV if provided
-        if profit_diff_csv is not None:
-            df = pd.read_csv(profit_diff_csv)
-            # Expect a column 'profit_diff_eur_per_ha' with n_agents values
-            if len(df) < self.n:
-                raise ValueError(f"CSV file must have at least {self.n} rows for agent profit differences.")
-            self.profit_diff_eur_per_ha = df['profit_diff_eur_per_ha'].values[:self.n]
-        else:
-            self.profit_diff_eur_per_ha = np.full(self.n, profit_diff_eur_per_ha)
+        
+        # Data-driven assignment from CSV
+        df = pd.read_csv(profits_csv)
+        if len(df) < self.n:
+            raise ValueError(f"CSV file must have at least {self.n} rows for agent profits.")
+        
+        # Store individual profit values
+        self.profit_conventional = df['profit_conventional_eur_per_ha'].values[:self.n]
+        self.profit_nature_based = df['profit_nature_based_eur_per_ha'].values[:self.n]
+
+        # Internal calculation of profit difference
+        self.profit_diff_eur_per_ha = self.profit_conventional - self.profit_nature_based
+        
         self.peer_weight = peer_weight  # Importance of neighbors' choices
         self.rng = np.random.default_rng(seed)  # Random generator for reproducibility
         self.stay_adopter_prob = stay_adopter_prob  # Probability to remain adopter if already adopted
@@ -52,33 +56,27 @@ class PeatlandABM:
         # Calculate average adoption in the population (as a peer proxy)
         peer_share = np.mean(self.adopt)
 
-        # Calculate raw economic utility (EUR/ha/year)
-        econ_utility_raw = self.subsidy_eur_per_ha - self.profit_weights * self.profit_diff_eur_per_ha
-        # Normalize economic utility to [0, 1]
-        econ_min = np.min(econ_utility_raw)
-        econ_max = np.max(econ_utility_raw)
-        econ_utility = (econ_utility_raw - econ_min) / (econ_max - econ_min + 1e-8)
+        # Calculate economic utility (now in real EUR/ha/year, no normalization)
+        econ_utility = self.subsidy_eur_per_ha - self.profit_weights * self.profit_diff_eur_per_ha
 
-        # Calculate raw social utility (unitless)
-        social_utility_raw = self.peer_weights * peer_share
-        # Normalize social utility to [0, 1]
-        social_min = np.min(social_utility_raw)
-        social_max = np.max(social_utility_raw)
-        social_utility = (social_utility_raw - social_min) / (social_max - social_min + 1e-8)
+        # Monetize social utility to make it comparable
+        social_capital_factor = 500  # EUR/ha, represents the max value of social pressure
+        social_utility = social_capital_factor * self.peer_weights * peer_share
 
-        # Combine with alpha
+        # Combine with alpha (now weighting two monetary values)
         utility = self.alpha * econ_utility + (1 - self.alpha) * social_utility
 
         # Store agent-level utility and mean utility
         mean_utility = float(np.mean(utility))
-        utility_per_agent = utility.copy()  # This is a numpy array, one value per agent
+        utility_per_agent = utility.copy()
         mean_econ_utility = float(np.mean(econ_utility))
         utility_econ_per_agent = econ_utility.copy()
         mean_social_utility = float(np.mean(social_utility))
         utility_social_per_agent = social_utility.copy()
 
-        # Logistic transformation: maps utility to [0,1] probability
-        prob = 1 / (1 + np.exp(-utility / 100.0))  # scale utility for probability
+        # Logistic transformation: maps utility (in EUR) to [0,1] probability
+        # The scaling factor (e.g., 100) determines sensitivity to utility changes
+        prob = 1 / (1 + np.exp(-utility / 100.0))
 
         # Each farmer adopts with probability 'prob'
         new_adopt = self.rng.binomial(1, prob)

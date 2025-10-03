@@ -35,7 +35,6 @@ with st.sidebar:
 
     # Economic and social parameters
     subsidy_eur_per_ha = st.slider("Subsidy for adoption (EUR/ha/year)", min_value=0.0, max_value=500.0, value=100.0, step=10.0)
-    profit_diff_eur_per_ha = st.slider("Profit difference (conventional - nature-inclusive, EUR/ha/year)", -200.0, 200.0, 50.0, 10.0)
     peer_weight = st.slider("Peer influence weight (0-1)", 0.0, 1.0, 0.3, 0.05)
 
 # Run button
@@ -45,7 +44,6 @@ if st.button("Run Simulation"):
     model = PeatlandABM(
         n_agents=n_agents,
         subsidy_eur_per_ha=subsidy_eur_per_ha,
-        profit_diff_eur_per_ha=profit_diff_eur_per_ha,
         peer_weight=peer_weight,
         seed=seed
     )
@@ -77,7 +75,6 @@ if st.button("Run Simulation"):
             "steps": steps,
             "seed": seed,
             "subsidy_eur_per_ha": subsidy_eur_per_ha,
-            "profit_diff_eur_per_ha": profit_diff_eur_per_ha,
             "peer_weight": peer_weight
         },
         "results_summary": {

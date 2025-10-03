@@ -14,7 +14,7 @@ class PeatlandABM:
     Uses real units for emissions (t CO2-eq/ha/year) and monetary values (EUR/ha/year).
     """
 
-    def __init__(self, n_agents=100, subsidy_eur_per_ha=100.0, peer_weight=0.3, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7, profits_csv='profits_agents.csv'):
+    def __init__(self, n_agents=100, subsidy_eur_per_ha=100.0, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7, profits_csv='profits_agents.csv'):
         self.n = n_agents  # Number of agents (farmers)
         self.subsidy_eur_per_ha = subsidy_eur_per_ha  # Subsidy paid to adopters (EUR/ha/year)
         
@@ -30,7 +30,6 @@ class PeatlandABM:
         # Internal calculation of profit difference
         self.profit_diff_eur_per_ha = self.profit_conventional - self.profit_nature_based
         
-        self.peer_weight = peer_weight  # Importance of neighbors' choices
         self.rng = np.random.default_rng(seed)  # Random generator for reproducibility
         self.stay_adopter_prob = stay_adopter_prob  # Probability to remain adopter if already adopted
         self.alpha = alpha  # Weight for economic vs social utility
@@ -85,10 +84,10 @@ class PeatlandABM:
                 new_adopt[i] = 1
         self.adopt = new_adopt
         # Agent learning: update peer_weights based on observed peer adoption
-        learning_rate = 0.1  # You can tune this value
+        social_learning_rate = 0.1  # You can tune this value
         for i in range(self.n):
             # Move peer_weight slightly toward current peer_share (bounded between 0.5 and 2.0)
-            self.peer_weights[i] += learning_rate * (peer_share - self.peer_weights[i])
+            self.peer_weights[i] += social_learning_rate * (peer_share - self.peer_weights[i])
             self.peer_weights[i] = np.clip(self.peer_weights[i], 0.5, 2.0)
 
         # Agent learning: update profit_weights based on economic experience

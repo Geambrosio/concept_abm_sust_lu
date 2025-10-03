@@ -29,13 +29,11 @@ with st.sidebar:
     st.header("Model Parameters")
 
     # Simulation settings
-    n_agents = st.slider("Number of farmers", min_value=20, max_value=500, value=100, step=10)
     steps = st.slider("Simulation steps", min_value=10, max_value=200, value=50, step=10)
     seed = st.number_input("Random seed", value=42, step=1)
 
     # Economic and social parameters
     subsidy_eur_per_ha = st.slider("Subsidy for adoption (EUR/ha/year)", min_value=0.0, max_value=500.0, value=100.0, step=10.0)
-    peer_weight = st.slider("Peer influence weight (0-1)", 0.0, 1.0, 0.3, 0.05)
 
 # Run button
 
@@ -44,7 +42,6 @@ if st.button("Run Simulation"):
     model = PeatlandABM(
         n_agents=n_agents,
         subsidy_eur_per_ha=subsidy_eur_per_ha,
-        peer_weight=peer_weight,
         seed=seed
     )
 
@@ -75,7 +72,6 @@ if st.button("Run Simulation"):
             "steps": steps,
             "seed": seed,
             "subsidy_eur_per_ha": subsidy_eur_per_ha,
-            "peer_weight": peer_weight
         },
         "results_summary": {
             "final_adoption_rate": float(results["adoption_rate"].iloc[-1]),

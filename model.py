@@ -53,8 +53,8 @@ class PeatlandABM:
         # Calculate average adoption in the population (as a peer proxy)
         peer_share = np.mean(self.adopt)
 
-        # Calculate economic utility (now in real EUR/ha/year, no normalization)
-        econ_utility = self.subsidy_eur_per_ha - self.profit_weights * self.profit_diff_eur_per_ha
+        # Calculate economic utility of adoption of nature-based practices (now in real EUR/ha/year, no normalization)
+        econ_utility = self.subsidy_eur_per_ha - self.profit_weights * self.profit_conventional + self.profit_weights * self.profit_nature_based
 
         # Monetize social utility to make it comparable
         social_capital_factor = 500  # EUR/ha, represents the max value of social pressure

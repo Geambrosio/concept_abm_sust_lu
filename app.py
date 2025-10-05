@@ -44,20 +44,22 @@ if st.button("Run Simulation"):
         seed=seed
     )
 
+
+
     # Run simulation for the number of steps
-    results = run_simulation(model, steps)
+    ds = run_simulation(model, steps)
 
-    # Cumulative (assumes each step ~ 1 year)
-    results["cum_policy_cost_eur_per_ha"] = results["policy_cost_eur_per_ha"].cumsum()
-    results["cum_emissions_saved_tCO2_ha"] = results["emissions_saved_tCO2_ha"].cumsum()
-    results["cum_cost_per_tonne_eur_per_tCO2"] = (
-        results["cum_policy_cost_eur_per_ha"] / results["cum_emissions_saved_tCO2_ha"].replace(0, np.nan)
-    )
+    # Use xarray for all metrics and plotting
+    steps_arr = ds.coords["step"].values
 
+    # Cumulative metrics
+    cum_policy_cost_eur_per_ha = ds["policy_cost_eur_per_ha"].cumsum(dim="step")
+    cum_emissions_saved_tCO2_ha = ds["emissions_saved_tCO2_ha"].cumsum(dim="step")
+    cum_cost_per_tonne_eur_per_tCO2 = cum_policy_cost_eur_per_ha / cum_emissions_saved_tCO2_ha.where(cum_emissions_saved_tCO2_ha != 0)
 
-    # Calculate moving averages for smoother plots
-    results["adoption_rate_ma10"] = results["adoption_rate"].rolling(window=10).mean()
-    results["avg_emissions_ma10"] = results["avg_emissions_tCO2_ha"].rolling(window=10).mean()
+    # Moving averages
+    adoption_rate_ma10 = ds["adoption_rate"].rolling(step=10, center=False).mean()
+    avg_emissions_ma10 = ds["avg_emissions_tCO2_ha"].rolling(step=10, center=False).mean()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(f"outputs/run_{timestamp}")    
@@ -72,14 +74,14 @@ if st.button("Run Simulation"):
             "subsidy_eur_per_ha": subsidy_eur_per_ha,
         },
         "results_summary": {
-            "final_adoption_rate": float(results["adoption_rate"].iloc[-1]),
-            "final_emissions_tCO2_ha": float(results["avg_emissions_tCO2_ha"].iloc[-1]),
-            "mean_adoption_rate": float(results["adoption_rate"].mean()),
-            "mean_emissions_tCO2_ha": float(results["avg_emissions_tCO2_ha"].mean()),
-            "final_cost_per_tonne_eur_per_tCO2": float(results["cost_per_tonne_eur_per_tCO2"].iloc[-1]),
-            "cumulative_cost_per_tonne_eur_per_tCO2": float(results["cum_cost_per_tonne_eur_per_tCO2"].iloc[-1])
+            "final_adoption_rate": float(ds["adoption_rate"].isel(step=-1).values),
+            "final_emissions_tCO2_ha": float(ds["avg_emissions_tCO2_ha"].isel(step=-1).values),
+            "mean_adoption_rate": float(ds["adoption_rate"].mean().values),
+            "mean_emissions_tCO2_ha": float(ds["avg_emissions_tCO2_ha"].mean().values),
+            "final_cost_per_tonne_eur_per_tCO2": float(ds["cost_per_tonne_eur_per_tCO2"].isel(step=-1).values),
+            "cumulative_cost_per_tonne_eur_per_tCO2": float(cum_cost_per_tonne_eur_per_tCO2.isel(step=-1).values)
         },
-        "metrics": list(results.columns),
+        "metrics": list(ds.data_vars.keys()),
         "files_generated": [
             "abm_results.csv",
             "metadata.json",
@@ -112,48 +114,47 @@ if st.button("Run Simulation"):
         for file in metadata["files_generated"]:
             f.write(f"- {file}\n")
 
-    # Save results to CSV
-    results.to_csv(output_dir / "abm_results.csv", index=False)
+    # Save results to CSV (convert only for download)
+    df = ds.to_dataframe().reset_index()
+    df.to_csv(output_dir / "abm_results.csv", index=False)
 
     # Display results table
     st.subheader("Simulation Output (first 2 rows)")
-    st.dataframe(results.head(2))
+    st.dataframe(df.head(2))
 
     st.subheader("Key policy metric")
     col1, col2 = st.columns(2)
     col1.metric("Final cost per tCO₂ saved",
-                f"{results['cost_per_tonne_eur_per_tCO2'].iloc[-1]:.0f} EUR/tCO₂")
+                f"{ds['cost_per_tonne_eur_per_tCO2'].isel(step=-1).values:.0f} EUR/tCO₂")
     col2.metric("Cumulative cost per tCO₂ saved",
-                f"{results['cum_cost_per_tonne_eur_per_tCO2'].iloc[-1]:.0f} EUR/tCO₂")
+                f"{cum_cost_per_tonne_eur_per_tCO2.isel(step=-1).values:.0f} EUR/tCO₂")
 
     # Plot adoption rate
     st.subheader("Adoption Rate Over Time")
     fig, ax = plt.subplots()
-    # Calculate trend line (slope & intercept)
-    slope, intercept = np.polyfit(results['step'], results['adoption_rate'], 1)
-    ax.plot(results['step'], slope * results["step"] + intercept, linestyle="--", color="black", label="Trend")
-    ax.plot(results['step'], results['adoption_rate'], label="Adoption Rate", color='blue')
+    slope, intercept = np.polyfit(steps_arr, ds['adoption_rate'].values, 1)
+    ax.plot(steps_arr, slope * steps_arr + intercept, linestyle="--", color="black", label="Trend")
+    ax.plot(steps_arr, ds['adoption_rate'].values, label="Adoption Rate", color='blue')
     ax.set_xlabel("Step")
     ax.set_ylabel("Share of Adopters")
     ax.legend()
     st.pyplot(fig)
-    fig.savefig(output_dir / "adoption_plot.png")  # Save to local file
+    fig.savefig(output_dir / "adoption_plot.png")
 
     # Plot emissions (t CO2-eq/ha/year)
     st.subheader("Average Emissions Over Time (t CO₂-eq/ha/year)")
     fig2, ax2 = plt.subplots()
-    # Calculate trend line (slope & intercept)
-    slope, intercept = np.polyfit(results['step'], results['avg_emissions_tCO2_ha'], 1)
-    ax2.plot(results['step'], slope * results["step"] + intercept, linestyle="--", color="black", label="Trend")
-    ax2.plot(results['step'], results['avg_emissions_tCO2_ha'], label="Emissions", color='red')
+    slope, intercept = np.polyfit(steps_arr, ds['avg_emissions_tCO2_ha'].values, 1)
+    ax2.plot(steps_arr, slope * steps_arr + intercept, linestyle="--", color="black", label="Trend")
+    ax2.plot(steps_arr, ds['avg_emissions_tCO2_ha'].values, label="Emissions", color='red')
     ax2.set_xlabel("Step")
     ax2.set_ylabel("Avg Emissions (t CO₂-eq/ha/year)")
     ax2.legend()
     st.pyplot(fig2)
-    fig2.savefig(output_dir / "emissions_plot.png")  # Save to local file
+    fig2.savefig(output_dir / "emissions_plot.png")
 
     st.subheader("Distribution of Agent Utility at Final Step")
-    final_utilities = results["utility_per_agent"].iloc[-1]
+    final_utilities = ds["utility_per_agent"].isel(step=-1).values
     fig3, ax3 = plt.subplots()
     ax3.hist(final_utilities, bins=20, color="skyblue", edgecolor="black")
     ax3.set_xlabel("Agent Utility (EUR/ha)")
@@ -163,8 +164,23 @@ if st.button("Run Simulation"):
     fig3.savefig(output_dir / "utility_histogram.png")
     st.write("This histogram shows the spread of incentives across agents at the end of the simulation.")
 
+    # Plot change in agent utility from first to last timestep
+    st.subheader("Change in Agent Utility: First vs Last Step")
+    first_utilities = ds["utility_per_agent"].isel(step=0).values
+    last_utilities = ds["utility_per_agent"].isel(step=-1).values
+    fig4, ax4 = plt.subplots()
+    ax4.hist(first_utilities, bins=20, alpha=0.5, label="First Step", color="orange", edgecolor="black")
+    ax4.hist(last_utilities, bins=20, alpha=0.5, label="Last Step", color="blue", edgecolor="black")
+    ax4.set_xlabel("Agent Utility (EUR/ha)")
+    ax4.set_ylabel("Number of Agents")
+    ax4.set_title("Agent Utility: First vs Last Step")
+    ax4.legend()
+    st.pyplot(fig4)
+    fig4.savefig(output_dir / "utility_change_histogram.png")
+    st.write("This plot compares the distribution of agent utility at the start and end of the simulation.")
+
     # CSV download button
-    st.download_button("Download Results CSV", data=results.to_csv(index=False), file_name="abm_results.csv")
+    st.download_button("Download Results CSV", data=df.to_csv(index=False), file_name="abm_results.csv")
 
 
 else:

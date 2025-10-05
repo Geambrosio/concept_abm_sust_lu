@@ -4,6 +4,7 @@
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 # Define ABM class
 
@@ -23,35 +24,41 @@ class PeatlandABM:
         if len(df) < self.n:
             raise ValueError(f"CSV file must have at least {self.n} rows for agent profits.")
         
-        # Store individual profit values
-        self.profit_conventional = df['profit_conventional_eur_per_ha'].values[:self.n]
-        self.profit_nature_based = df['profit_nature_based_eur_per_ha'].values[:self.n]
+        # Store individual profit values as xarray DataArrays
+        self.profit_conventional = xr.DataArray(
+            df['profit_conventional_eur_per_ha'].values[:self.n], dims=["agent"])
+        self.profit_nature_based = xr.DataArray(
+            df['profit_nature_based_eur_per_ha'].values[:self.n], dims=["agent"])
 
         # Internal calculation of profit difference
         self.profit_diff_eur_per_ha = self.profit_conventional - self.profit_nature_based
-        
+
         self.rng = np.random.default_rng(seed)  # Random generator for reproducibility
         self.stay_adopter_prob = stay_adopter_prob  # Probability to remain adopter if already adopted
         self.alpha = alpha  # Weight for economic vs social utility
 
         # Always randomize stay_adopter_probs per agent
-        self.stay_adopter_probs = self.rng.uniform(0.7, 0.99, size=self.n)
+        self.stay_adopter_probs = xr.DataArray(
+            self.rng.uniform(0.7, 0.99, size=self.n), dims=["agent"])
 
         # Randomize profit and peer weights for each agent for more heterogeneity
         # Profit weights: between 0.5 and 2.0 (higher = more profit-driven)
-        self.profit_weights = self.rng.uniform(0.5, 2.0, size=self.n)
+        self.profit_weights = xr.DataArray(
+            self.rng.uniform(0.5, 2.0, size=self.n), dims=["agent"])
         # Peer weights: between 0.5 and 2.0 (higher = more peer-driven)
-        self.peer_weights = self.rng.uniform(0.5, 2.0, size=self.n)
+        self.peer_weights = xr.DataArray(
+            self.rng.uniform(0.5, 2.0, size=self.n), dims=["agent"])
 
         # Initialize 5% of farmers as adopters
-        self.adopt = self.rng.binomial(1, 0.05, size=self.n)
+        self.adopt = xr.DataArray(
+            self.rng.binomial(1, 0.05, size=self.n), dims=["agent"])
 
     def step(self):
         """
         One time step: compute adoption decisions and return summary stats.
         """
         # Calculate average adoption in the population (as a peer proxy)
-        peer_share = np.mean(self.adopt)
+        peer_share = float(self.adopt.mean())
 
         # Calculate economic utility of adoption of nature-based practices (now in real EUR/ha/year, no normalization)
         econ_utility = self.subsidy_eur_per_ha - self.profit_weights * self.profit_conventional + self.profit_weights * self.profit_nature_based
@@ -64,40 +71,44 @@ class PeatlandABM:
         utility = self.alpha * econ_utility + (1 - self.alpha) * social_utility
 
         # Store agent-level utility and mean utility
-        mean_utility = float(np.mean(utility))
-        utility_per_agent = utility.copy()
-        mean_econ_utility = float(np.mean(econ_utility))
-        utility_econ_per_agent = econ_utility.copy()
-        mean_social_utility = float(np.mean(social_utility))
-        utility_social_per_agent = social_utility.copy()
+        mean_utility = float(utility.mean())
+        utility_per_agent = utility.values.copy()
+        mean_econ_utility = float(econ_utility.mean())
+        utility_econ_per_agent = econ_utility.values.copy()
+        mean_social_utility = float(social_utility.mean())
+        utility_social_per_agent = social_utility.values.copy()
 
         # Logistic transformation: maps utility (in EUR) to [0,1] probability
         # The scaling factor (e.g., 100) determines sensitivity to utility changes
-        prob = 1 / (1 + np.exp(-utility / 100.0))
+        prob = 1 / (1 + np.exp(-utility.values / 100.0))
 
         # Each farmer adopts with probability 'prob'
         new_adopt = self.rng.binomial(1, prob)
+        # Use xarray for agent state
+        new_adopt_arr = self.adopt.copy()
         for i in range(self.n):
-            if self.adopt[i] == 1 and self.rng.random() < self.stay_adopter_probs[i]:
-                new_adopt[i] = 1
-        self.adopt = new_adopt
+            if self.adopt.values[i] == 1 and self.rng.random() < self.stay_adopter_probs.values[i]:
+                new_adopt_arr.values[i] = 1
+            else:
+                new_adopt_arr.values[i] = new_adopt[i]
+        self.adopt = new_adopt_arr
         # Agent learning: update peer_weights based on observed peer adoption
         social_learning_rate = 0.1  # You can tune this value
         for i in range(self.n):
             # Move peer_weight slightly toward current peer_share (bounded between 0.5 and 2.0)
-            self.peer_weights[i] += social_learning_rate * (peer_share - self.peer_weights[i])
-            self.peer_weights[i] = np.clip(self.peer_weights[i], 0.5, 2.0)
+            self.peer_weights.values[i] += social_learning_rate * (peer_share - self.peer_weights.values[i])
+            self.peer_weights.values[i] = np.clip(self.peer_weights.values[i], 0.5, 2.0)
 
         # Agent learning: update profit_weights based on economic experience
         econ_learning_rate = 0.1  # Tune as needed
         for i in range(self.n):
             # If agent adopted, update profit_weight toward economic utility (bounded between 0.5 and 2.0)
-            if self.adopt[i] == 1:
-                self.profit_weights[i] += econ_learning_rate * (econ_utility[i] - self.profit_weights[i])
-                self.profit_weights[i] = np.clip(self.profit_weights[i], 0.5, 2.0)
+            if self.adopt.values[i] == 1:
+                self.profit_weights.values[i] += econ_learning_rate * (econ_utility.values[i] - self.profit_weights.values[i])
+                self.profit_weights.values[i] = np.clip(self.profit_weights.values[i], 0.5, 2.0)
 
         # Emissions: adopters emit less (t CO2-eq/ha/year)
-        emis = 5.0 * (1 - 0.5 * self.adopt)  # non-adopter: 5, adopter: 2.5
+        emis = 5.0 * (1 - 0.5 * self.adopt.values)  # non-adopter: 5, adopter: 2.5
 
         # New: compute policy cost & cost-effectiveness (per ha)
         baseline = 5.0  # t CO2-eq/ha/year under conventional
@@ -136,9 +147,52 @@ def run_simulation(model, steps=50):
     Run the ABM for a number of time steps and collect metrics.
     Returns a pandas DataFrame.
     """
-    rows = []
+    # Prepare storage for each variable
+    adoption_rate = []
+    avg_emissions_tCO2_ha = []
+    subsidy_eur_per_ha = []
+    emissions_saved_tCO2_ha = []
+    policy_cost_eur_per_ha = []
+    cost_per_tonne_eur_per_tCO2 = []
+    mean_utility = []
+    utility_per_agent = []
+    mean_econ_utility = []
+    utility_econ_per_agent = []
+    mean_social_utility = []
+    utility_social_per_agent = []
+
     for t in range(steps):
         result = model.step()
-        result["step"] = t + 1
-        rows.append(result)
-    return pd.DataFrame(rows)
+        adoption_rate.append(result["adoption_rate"])
+        avg_emissions_tCO2_ha.append(result["avg_emissions_tCO2_ha"])
+        subsidy_eur_per_ha.append(result["subsidy_eur_per_ha"])
+        emissions_saved_tCO2_ha.append(result["emissions_saved_tCO2_ha"])
+        policy_cost_eur_per_ha.append(result["policy_cost_eur_per_ha"])
+        cost_per_tonne_eur_per_tCO2.append(result["cost_per_tonne_eur_per_tCO2"])
+        mean_utility.append(result["mean_utility"])
+        utility_per_agent.append(result["utility_per_agent"])
+        mean_econ_utility.append(result["mean_econ_utility"])
+        utility_econ_per_agent.append(result["utility_econ_per_agent"])
+        mean_social_utility.append(result["mean_social_utility"])
+        utility_social_per_agent.append(result["utility_social_per_agent"])
+
+    # Convert lists to arrays
+    steps_arr = np.arange(1, steps + 1)
+    agent_dim = np.arange(model.n)
+
+    ds = xr.Dataset({
+        "adoption_rate": ("step", np.array(adoption_rate)),
+        "avg_emissions_tCO2_ha": ("step", np.array(avg_emissions_tCO2_ha)),
+        "subsidy_eur_per_ha": ("step", np.array(subsidy_eur_per_ha)),
+        "profit_diff_eur_per_ha": ("agent", model.profit_diff_eur_per_ha.data),
+        "emissions_saved_tCO2_ha": ("step", np.array(emissions_saved_tCO2_ha)),
+        "policy_cost_eur_per_ha": ("step", np.array(policy_cost_eur_per_ha)),
+        "cost_per_tonne_eur_per_tCO2": ("step", np.array(cost_per_tonne_eur_per_tCO2)),
+        "mean_utility": ("step", np.array(mean_utility)),
+        "utility_per_agent": (["step", "agent"], np.stack(utility_per_agent)),
+        "mean_econ_utility": ("step", np.array(mean_econ_utility)),
+        "utility_econ_per_agent": (["step", "agent"], np.stack(utility_econ_per_agent)),
+        "mean_social_utility": ("step", np.array(mean_social_utility)),
+        "utility_social_per_agent": (["step", "agent"], np.stack(utility_social_per_agent)),
+    }, coords={"step": steps_arr, "agent": agent_dim})
+    return ds

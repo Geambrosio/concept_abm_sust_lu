@@ -29,11 +29,27 @@ with st.sidebar:
     st.header("Model Parameters")
 
     # Simulation settings
-    steps = st.slider("Simulation steps", min_value=10, max_value=200, value=50, step=10)
+    steps = st.slider("Simulation steps", min_value=10, max_value=100, value=50, step=10)
     seed = st.number_input("Random seed", value=42, step=1)
 
     # Economic and social parameters
     subsidy_eur_per_ha = st.slider("Subsidy for adoption (EUR/ha/year)", min_value=0.0, max_value=500.0, value=100.0, step=10.0)
+
+    st.markdown("---")
+    st.subheader("Agent Decision Parameters")
+    alpha = st.slider("Alpha (Economic vs Social Weight)", min_value=0.0, max_value=1.0, value=0.7, step=0.05)
+    social_capital_factor = st.slider("Social Capital Factor (EUR/ha)", min_value=0, max_value=1000, value=500, step=50)
+
+    st.markdown("---")
+    st.subheader("Agent Heterogeneity Ranges")
+    profit_weight_min, profit_weight_max = st.slider("Profit Weight Range", min_value=0.5, max_value=2.0, value=(0.5, 2.0), step=0.05)
+    peer_weight_min, peer_weight_max = st.slider("Peer Weight Range", min_value=0.5, max_value=2.0, value=(0.5, 2.0), step=0.05)
+    stay_adopter_prob_min, stay_adopter_prob_max = st.slider("Stay Adopter Probability Range", min_value=0.7, max_value=0.99, value=(0.7, 0.99), step=0.05)
+
+    st.markdown("---")
+    st.subheader("Learning Rates")
+    social_learning_rate = st.slider("Social Learning Rate", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
+    econ_learning_rate = st.slider("Economic Learning Rate", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
 
 # Run button
 

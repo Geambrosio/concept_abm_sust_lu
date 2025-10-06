@@ -48,4 +48,4 @@ def generate_profit_data(n_agents=100, mean_conv=1500, std_conv=200, mean_nat=14
 
 
 if __name__ == "__main__":
-    generate_profit_data(n_agents=100)
+    generate_profit_data(n_agents=500)

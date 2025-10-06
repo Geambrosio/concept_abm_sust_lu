@@ -15,7 +15,7 @@ class PeatlandABM:
     Uses real units for emissions (t CO2-eq/ha/year) and monetary values (EUR/ha/year).
     """
 
-    def __init__(self, n_agents=100, subsidy_eur_per_ha=100.0, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7, profits_csv='profits_agents.csv'):
+    def __init__(self, n_agents=500, subsidy_eur_per_ha=100.0, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7, profits_csv='profits_agents.csv'):
         self.n = n_agents  # Number of agents (farmers)
         self.subsidy_eur_per_ha = subsidy_eur_per_ha  # Subsidy paid to adopters (EUR/ha/year)
         

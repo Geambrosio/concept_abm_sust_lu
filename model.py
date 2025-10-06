@@ -15,15 +15,15 @@ class PeatlandABM:
     Uses real units for emissions (t CO2-eq/ha/year) and monetary values (EUR/ha/year).
     """
 
-    def __init__(self, n_agents=500, subsidy_eur_per_ha=100.0, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7, profits_csv='profits_agents.csv'):
+    def __init__(self, n_agents=500, subsidy_eur_per_ha=100.0, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7, social_capital_factor=500, scaling_factor=100, initial_share_adopters=0.05, profits_csv='profits_agents.csv'):
         self.n = n_agents  # Number of agents (farmers)
         self.subsidy_eur_per_ha = subsidy_eur_per_ha  # Subsidy paid to adopters (EUR/ha/year)
-        
+
         # Data-driven assignment from CSV
         df = pd.read_csv(profits_csv)
         if len(df) < self.n:
             raise ValueError(f"CSV file must have at least {self.n} rows for agent profits.")
-        
+
         # Store individual profit values as xarray DataArrays
         self.profit_conventional = xr.DataArray(
             df['profit_conventional_eur_per_ha'].values[:self.n], dims=["agent"])
@@ -36,6 +36,8 @@ class PeatlandABM:
         self.rng = np.random.default_rng(seed)  # Random generator for reproducibility
         self.stay_adopter_prob = stay_adopter_prob  # Probability to remain adopter if already adopted
         self.alpha = alpha  # Weight for economic vs social utility
+        self.social_capital_factor = social_capital_factor  # Social pressure factor
+        self.scaling_factor = scaling_factor  # Logistic scaling factor
 
         # Always randomize stay_adopter_probs per agent
         self.stay_adopter_probs = xr.DataArray(
@@ -49,9 +51,9 @@ class PeatlandABM:
         self.peer_weights = xr.DataArray(
             self.rng.uniform(0.5, 2.0, size=self.n), dims=["agent"])
 
-        # Initialize 5% of farmers as adopters
+        # Initialize given share of farmers as adopters
         self.adopt = xr.DataArray(
-            self.rng.binomial(1, 0.05, size=self.n), dims=["agent"])
+            self.rng.binomial(1, initial_share_adopters, size=self.n), dims=["agent"])
 
     def step(self):
         """
@@ -64,8 +66,7 @@ class PeatlandABM:
         econ_utility = self.subsidy_eur_per_ha - self.profit_weights * self.profit_conventional + self.profit_weights * self.profit_nature_based
 
         # Monetize social utility to make it comparable
-        social_capital_factor = 500  # EUR/ha, represents the max value of social pressure
-        social_utility = social_capital_factor * self.peer_weights * peer_share
+        social_utility = self.social_capital_factor * self.peer_weights * peer_share
 
         # Combine with alpha (now weighting two monetary values)
         utility = self.alpha * econ_utility + (1 - self.alpha) * social_utility
@@ -79,8 +80,8 @@ class PeatlandABM:
         utility_social_per_agent = social_utility.values.copy()
 
         # Logistic transformation: maps utility (in EUR) to [0,1] probability
-        # The scaling factor (e.g., 100) determines sensitivity to utility changes
-        prob = 1 / (1 + np.exp(-utility.values / 100.0))
+        # The scaling factor determines sensitivity to utility changes
+        prob = 1 / (1 + np.exp(-utility.values / self.scaling_factor))
 
         # Each farmer adopts with probability 'prob'
         new_adopt = self.rng.binomial(1, prob)

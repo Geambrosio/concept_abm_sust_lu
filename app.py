@@ -26,30 +26,69 @@ st.write("This minimal agent-based model simulates how farmers adopt sutainable 
 
 # Sidebar: model parameters
 with st.sidebar:
-    st.header("Model Parameters")
+    st.header("Model Equations & Parameters")
 
-    # Simulation settings
-    steps = st.slider("Simulation steps", min_value=10, max_value=100, value=50, step=10)
-    seed = st.number_input("Random seed", value=42, step=1)
-
-    # Economic and social parameters
-    subsidy_eur_per_ha = st.slider("Subsidy for adoption (EUR/ha/year)", min_value=0.0, max_value=500.0, value=100.0, step=10.0)
+    # Utility Calculation
+    st.latex(r"U_i = \alpha \cdot U_{econ,i} + (1 - \alpha) \cdot U_{social,i}")
+    st.latex(r"U_{econ,i} = S - w^{(p)}_i \cdot P^{(conv)}_i + w^{(p)}_i \cdot P^{(nat)}_i")
+    st.latex(r"U_{social,i} = SCF \cdot w^{(s)}_i \cdot \phi")
+    st.markdown("**Parameters for Utility Calculation:**")
+    subsidy_eur_per_ha = st.slider(
+        "Subsidy for adoption $S$ (EUR/ha/year)", 0.0, 500.0, 100.0, 10.0,
+        help="Annual subsidy paid to adopters. Higher values increase economic utility.")
+    alpha = st.slider(
+        "Alpha $\alpha$ (Economic vs Social Weight)", 0.0, 1.0, 0.7, 0.05,
+        help="Relative weight of economic utility vs social utility. 1 = only economic, 0 = only social.")
+    social_capital_factor = st.slider(
+        "Social Capital Factor $SCF$ (EUR/ha)", 0, 1000, 500, 50,
+        help="Maximum value of social pressure. Higher values make peer influence stronger.")
+    initial_share_adopters = st.slider(
+        "Initial Share of Adopters $\phi$ (%)", 0, 100, 5, 1,
+        help="Percentage of agents starting as adopters.")
 
     st.markdown("---")
-    st.subheader("Agent Decision Parameters")
-    alpha = st.slider("Alpha (Economic vs Social Weight)", min_value=0.0, max_value=1.0, value=0.7, step=0.05)
-    social_capital_factor = st.slider("Social Capital Factor (EUR/ha)", min_value=0, max_value=1000, value=500, step=50)
+    # Adoption Probability
+    st.latex(r"p_i = \frac{1}{1 + \exp\left(-\frac{U_i}{k}\right)}")
+    scaling_factor = st.slider(
+        "Adoption Sensitivity $k$ (Logistic Scaling Factor)", 50, 500, 100, 10,
+        help="Controls how sensitive adoption probability is to utility. Higher = less sensitive.")
 
     st.markdown("---")
-    st.subheader("Agent Heterogeneity Ranges")
-    profit_weight_min, profit_weight_max = st.slider("Profit Weight Range", min_value=0.5, max_value=2.0, value=(0.5, 2.0), step=0.05)
-    peer_weight_min, peer_weight_max = st.slider("Peer Weight Range", min_value=0.5, max_value=2.0, value=(0.5, 2.0), step=0.05)
-    stay_adopter_prob_min, stay_adopter_prob_max = st.slider("Stay Adopter Probability Range", min_value=0.7, max_value=0.99, value=(0.7, 0.99), step=0.05)
+    # Agent Heterogeneity
+    st.latex(r"w^{(p)}_i, w^{(s)}_i \in [0.5, 2.0]")
+    profit_weight_min, profit_weight_max = st.slider(
+        "Profit Weight Range $w^{(p)}_i$", 0.5, 2.0, (0.5, 2.0), 0.05,
+        help="Range for agent profit weights. Higher = more profit-driven.")
+    peer_weight_min, peer_weight_max = st.slider(
+        "Peer Weight Range $w^{(s)}_i$", 0.5, 2.0, (0.5, 2.0), 0.05,
+        help="Range for agent peer weights. Higher = more peer-driven.")
+    stay_adopter_prob_min, stay_adopter_prob_max = st.slider(
+        "Stay Adopter Probability Range", 0.7, 0.99, (0.7, 0.99), 0.05,
+        help="Probability that an adopter remains an adopter at each step.")
 
     st.markdown("---")
-    st.subheader("Learning Rates")
-    social_learning_rate = st.slider("Social Learning Rate", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
-    econ_learning_rate = st.slider("Economic Learning Rate", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
+    # Learning Rates
+    st.latex(r"w^{(s)}_i(t+1) = w^{(s)}_i(t) + \lambda_{social} (\phi(t) - w^{(s)}_i(t))")
+    st.latex(r"w^{(p)}_i(t+1) = w^{(p)}_i(t) + \lambda_{econ} (U_{econ,i}(t) - w^{(p)}_i(t))")
+    social_learning_rate = st.slider(
+        "Social Learning Rate $\lambda_{social}$", 0.0, 1.0, 0.1, 0.05,
+        help="How quickly agents update peer weights based on observed adoption.")
+    econ_learning_rate = st.slider(
+        "Economic Learning Rate $\lambda_{econ}$", 0.0, 1.0, 0.1, 0.05,
+        help="How quickly agents update profit weights based on economic experience.")
+
+    st.markdown("---")
+    # Emissions and Policy Cost
+    st.latex(r"E_i = 5.0 \cdot (1 - 0.5 \cdot A_i)")
+    st.latex(r"\text{PolicyCost}_{ha} = S \cdot \phi")
+    st.latex(r"\text{EmissionsSaved}_{ha} = \max(5.0 - \overline{E}, 0)")
+    st.latex(r"\text{CostPerTonne} = \frac{\text{PolicyCost}_{ha}}{\text{EmissionsSaved}_{ha}}")
+    steps = st.slider(
+        "Simulation Steps", 10, 200, 50, 10,
+        help="Number of time steps to run the simulation.")
+    seed = st.number_input(
+        "Random Seed", value=42, step=1,
+        help="Seed for random number generation (reproducibility).")
 
 # Run button
 
@@ -57,7 +96,11 @@ if st.button("Run Simulation"):
     # Initialize model with real units
     model = PeatlandABM(
         subsidy_eur_per_ha=subsidy_eur_per_ha,
-        seed=seed
+        seed=seed,
+        alpha=alpha,
+        social_capital_factor=social_capital_factor,
+        scaling_factor=scaling_factor,
+        initial_share_adopters=initial_share_adopters / 100.0
     )
 
 
@@ -168,17 +211,6 @@ if st.button("Run Simulation"):
     ax2.legend()
     st.pyplot(fig2)
     fig2.savefig(output_dir / "emissions_plot.png")
-
-    st.subheader("Distribution of Agent Utility at Final Step")
-    final_utilities = ds["utility_per_agent"].isel(step=-1).values
-    fig3, ax3 = plt.subplots()
-    ax3.hist(final_utilities, bins=20, color="skyblue", edgecolor="black")
-    ax3.set_xlabel("Agent Utility (EUR/ha)")
-    ax3.set_ylabel("Number of Agents")
-    ax3.set_title("Utility Distribution at Final Step")
-    st.pyplot(fig3)
-    fig3.savefig(output_dir / "utility_histogram.png")
-    st.write("This histogram shows the spread of incentives across agents at the end of the simulation.")
 
     # Plot change in agent utility from first to last timestep
     st.subheader("Change in Agent Utility: First vs Last Step")

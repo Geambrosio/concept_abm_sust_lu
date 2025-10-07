@@ -21,11 +21,19 @@ from model import PeatlandABM, run_simulation
 st.set_page_config(page_title="Peatland ABM", layout="wide")
 
 # Title and description
-st.title("Peatland ABM — Agent-Based Modeling Demo")
-st.write("This minimal agent-based model simulates how farmers adopt sutainable practices based on simplified policy, economic and social aspects.")
+st.title("Conceptual Agent-Based Model of Sustainable Land-Use Farming Adoption")
+st.write("This interactive demo explores sustainable land-use adoption using a utility function that combines social and economic components at the farmer level (peer and economic weights) and a regional context parameter (alpha).")
 
 # Sidebar: model parameters
 with st.sidebar:
+    st.markdown("---")
+    st.subheader("Monte Carlo Simulation")
+    n_runs = st.number_input(
+        "Number of Monte Carlo Runs", min_value=1, max_value=500, value=1, step=1,
+        help="How many times to repeat the simulation with different random seeds.")
+    seed_base = st.number_input(
+        "Monte Carlo Seed Base", value=42, step=1,
+        help="Base seed for reproducibility. Each run uses seed_base + run_index.")
     st.header("Model Equations & Parameters")
 
     # Utility Calculation
@@ -93,143 +101,146 @@ with st.sidebar:
 # Run button
 
 if st.button("Run Simulation"):
-    # Initialize model with real units
-    model = PeatlandABM(
+    # Prepare model parameters
+    model_params = dict(
         subsidy_eur_per_ha=subsidy_eur_per_ha,
-        seed=seed,
         alpha=alpha,
         social_capital_factor=social_capital_factor,
         scaling_factor=scaling_factor,
         initial_share_adopters=initial_share_adopters / 100.0
     )
 
-
-
-    # Run simulation for the number of steps
-    ds = run_simulation(model, steps)
-
-    # Use xarray for all metrics and plotting
-    steps_arr = ds.coords["step"].values
-
-    # Cumulative metrics
-    cum_policy_cost_eur_per_ha = ds["policy_cost_eur_per_ha"].cumsum(dim="step")
-    cum_emissions_saved_tCO2_ha = ds["emissions_saved_tCO2_ha"].cumsum(dim="step")
-    cum_cost_per_tonne_eur_per_tCO2 = cum_policy_cost_eur_per_ha / cum_emissions_saved_tCO2_ha.where(cum_emissions_saved_tCO2_ha != 0)
-
-    # Moving averages
-    adoption_rate_ma10 = ds["adoption_rate"].rolling(step=10, center=False).mean()
-    avg_emissions_ma10 = ds["avg_emissions_tCO2_ha"].rolling(step=10, center=False).mean()
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(f"outputs/run_{timestamp}")    
+    output_dir = Path(f"outputs/monte_carlo_run_{timestamp}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create metadata dictionary
-    metadata = {
-        "timestamp": timestamp,
-        "parameters": {
-            "steps": steps,
-            "seed": seed,
-            "subsidy_eur_per_ha": subsidy_eur_per_ha,
-        },
-        "results_summary": {
-            "final_adoption_rate": float(ds["adoption_rate"].isel(step=-1).values),
-            "final_emissions_tCO2_ha": float(ds["avg_emissions_tCO2_ha"].isel(step=-1).values),
-            "mean_adoption_rate": float(ds["adoption_rate"].mean().values),
-            "mean_emissions_tCO2_ha": float(ds["avg_emissions_tCO2_ha"].mean().values),
-            "final_cost_per_tonne_eur_per_tCO2": float(ds["cost_per_tonne_eur_per_tCO2"].isel(step=-1).values),
-            "cumulative_cost_per_tonne_eur_per_tCO2": float(cum_cost_per_tonne_eur_per_tCO2.isel(step=-1).values)
-        },
-        "metrics": list(ds.data_vars.keys()),
-        "files_generated": [
-            "abm_results.csv",
-            "metadata.json",
-            "metadata.txt",
-            "adoption_plot.png",
-            "emissions_plot.png",
-            "cost_per_tonne_plot.png"
-        ]
-    }
+    # Run Monte Carlo or single simulation
+    if n_runs == 1:
+        from model import run_simulation
+        model = PeatlandABM(seed=seed, **model_params)
+        ds = run_simulation(model, steps)
+        results_list = [ds]
+    else:
+        from model import monte_carlo_runs
+        results_list = monte_carlo_runs(n_runs, steps=steps, seed_base=seed_base, **model_params)
 
-    # Save metadata as JSON
-    with open(output_dir / "metadata.json", "w") as f:
-        json.dump(metadata, f, indent=4)
+    # Utility: initial vs final step (Monte Carlo)
+    mean_utility = np.stack([ds['mean_utility'].values for ds in results_list])
+    # Initial step stats
+    initial_mean = mean_utility[:, 0]
+    initial_mean_mu = np.mean(initial_mean)
+    initial_mean_std = np.std(initial_mean)
+    initial_mean_q25 = np.percentile(initial_mean, 25)
+    initial_mean_q75 = np.percentile(initial_mean, 75)
+    # Final step stats
+    final_mean = mean_utility[:, -1]
+    final_mean_mu = np.mean(final_mean)
+    final_mean_std = np.std(final_mean)
+    final_mean_q25 = np.percentile(final_mean, 25)
+    final_mean_q75 = np.percentile(final_mean, 75)
+    # Prepare model parameters
+    model_params = dict(
+        subsidy_eur_per_ha=subsidy_eur_per_ha,
+        alpha=alpha,
+        social_capital_factor=social_capital_factor,
+        scaling_factor=scaling_factor,
+        initial_share_adopters=initial_share_adopters / 100.0
+    )
 
-    # Save metadata as TXT
-    with open(output_dir / "metadata.txt", "w") as f:
-        f.write("Peatland ABM Simulation Metadata\n")
-        f.write("=" * 30 + "\n\n")
-        f.write(f"Timestamp: {timestamp}\n\n")
-        f.write("Parameters (real units):\n")
-        for param, value in metadata["parameters"].items():
-            f.write(f"- {param}: {value}\n")
-        f.write("\nResults Summary (real units):\n")
-        for metric, value in metadata["results_summary"].items():
-            f.write(f"- {metric}: {value:.4f}\n")
-        f.write("\nMetrics Saved:\n")
-        for metric in metadata["metrics"]:
-            f.write(f"- {metric}\n")
-        f.write("\nFiles Generated:\n")
-        for file in metadata["files_generated"]:
-            f.write(f"- {file}\n")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = Path(f"outputs/monte_carlo_run_{timestamp}")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save results to CSV (convert only for download)
-    df = ds.to_dataframe().reset_index()
-    df.to_csv(output_dir / "abm_results.csv", index=False)
+    # Run Monte Carlo or single simulation
+    if n_runs == 1:
+        from model import run_simulation
+        model = PeatlandABM(seed=seed, **model_params)
+        ds = run_simulation(model, steps)
+        results_list = [ds]
+    else:
+        from model import monte_carlo_runs
+        results_list = monte_carlo_runs(n_runs, steps=steps, seed_base=seed_base, **model_params)
+
+    # Aggregate results
+    # Stack metrics for each run
+    metrics = ["adoption_rate", "avg_emissions_tCO2_ha", "policy_cost_eur_per_ha", "cost_per_tonne_eur_per_tCO2"]
+    stacked = {m: np.stack([ds[m].values for ds in results_list]) for m in metrics}
+    steps_arr = results_list[0].coords["step"].values
+
+    # Compute mean, std, 25th, 75th percentiles
+    agg = {}
+    for m in metrics:
+        agg[f"{m}_mean"] = np.mean(stacked[m], axis=0)
+        agg[f"{m}_std"] = np.std(stacked[m], axis=0)
+        agg[f"{m}_q25"] = np.percentile(stacked[m], 25, axis=0)
+        agg[f"{m}_q75"] = np.percentile(stacked[m], 75, axis=0)
+
+    # Save aggregated results to CSV
+    df_mc = pd.DataFrame({"step": steps_arr})
+    for k, v in agg.items():
+        df_mc[k] = v
+    df_mc.to_csv(output_dir / "monte_carlo_stats.csv", index=False)
 
     # Display results table
-    st.subheader("Simulation Output (first 2 rows)")
-    st.dataframe(df.head(2))
+    st.subheader("Monte Carlo Results (first 5 rows)")
+    st.dataframe(df_mc.head(5))
 
-    st.subheader("Key policy metric")
-    col1, col2 = st.columns(2)
-    col1.metric("Final cost per tCO₂ saved",
-                f"{ds['cost_per_tonne_eur_per_tCO2'].isel(step=-1).values:.0f} EUR/tCO₂")
-    col2.metric("Cumulative cost per tCO₂ saved",
-                f"{cum_cost_per_tonne_eur_per_tCO2.isel(step=-1).values:.0f} EUR/tCO₂")
-
-    # Plot adoption rate
-    st.subheader("Adoption Rate Over Time")
+    # Plot mean ± std for adoption rate
+    st.subheader("Adoption Rate Over Time (Monte Carlo)")
     fig, ax = plt.subplots()
-    slope, intercept = np.polyfit(steps_arr, ds['adoption_rate'].values, 1)
-    ax.plot(steps_arr, slope * steps_arr + intercept, linestyle="--", color="black", label="Trend")
-    ax.plot(steps_arr, ds['adoption_rate'].values, label="Adoption Rate", color='blue')
+    ax.plot(steps_arr, agg['adoption_rate_mean'], label="Mean Adoption Rate")
+    ax.fill_between(steps_arr, agg['adoption_rate_mean'] - agg['adoption_rate_std'], agg['adoption_rate_mean'] + agg['adoption_rate_std'], alpha=0.3, label="±1 Std Dev")
     ax.set_xlabel("Step")
     ax.set_ylabel("Share of Adopters")
     ax.legend()
     st.pyplot(fig)
     fig.savefig(output_dir / "adoption_plot.png")
 
-    # Plot emissions (t CO2-eq/ha/year)
-    st.subheader("Average Emissions Over Time (t CO₂-eq/ha/year)")
+    # Plot mean ± std for emissions
+    st.subheader("Average Emissions Over Time (Monte Carlo)")
     fig2, ax2 = plt.subplots()
-    slope, intercept = np.polyfit(steps_arr, ds['avg_emissions_tCO2_ha'].values, 1)
-    ax2.plot(steps_arr, slope * steps_arr + intercept, linestyle="--", color="black", label="Trend")
-    ax2.plot(steps_arr, ds['avg_emissions_tCO2_ha'].values, label="Emissions", color='red')
+    ax2.plot(steps_arr, agg['avg_emissions_tCO2_ha_mean'], label="Mean Emissions", color='red')
+    ax2.fill_between(steps_arr, agg['avg_emissions_tCO2_ha_mean'] - agg['avg_emissions_tCO2_ha_std'], agg['avg_emissions_tCO2_ha_mean'] + agg['avg_emissions_tCO2_ha_std'], alpha=0.3, label="±1 Std Dev", color='red')
     ax2.set_xlabel("Step")
     ax2.set_ylabel("Avg Emissions (t CO₂-eq/ha/year)")
     ax2.legend()
     st.pyplot(fig2)
     fig2.savefig(output_dir / "emissions_plot.png")
 
-    # Plot change in agent utility from first to last timestep
-    st.subheader("Change in Agent Utility: First vs Last Step")
-    first_utilities = ds["utility_per_agent"].isel(step=0).values
-    last_utilities = ds["utility_per_agent"].isel(step=-1).values
-    fig4, ax4 = plt.subplots()
-    ax4.hist(first_utilities, bins=20, alpha=0.5, label="First Step", color="orange", edgecolor="black")
-    ax4.hist(last_utilities, bins=20, alpha=0.5, label="Last Step", color="blue", edgecolor="black")
-    ax4.set_xlabel("Agent Utility (EUR/ha)")
-    ax4.set_ylabel("Number of Agents")
-    ax4.set_title("Agent Utility: First vs Last Step")
-    ax4.legend()
-    st.pyplot(fig4)
-    fig4.savefig(output_dir / "utility_change_histogram.png")
-    st.write("This plot compares the distribution of agent utility at the start and end of the simulation.")
+    # Utility figure (now last)
+    st.subheader("Utility Over Time (Monte Carlo)")
+    steps_arr = results_list[0].coords["step"].values
+    # Stack all runs for each utility type
+    mean_utility_arr = np.stack([ds['mean_utility'].values for ds in results_list])
+    mean_econ_utility_arr = np.stack([ds['mean_econ_utility'].values for ds in results_list])
+    mean_social_utility_arr = np.stack([ds['mean_social_utility'].values for ds in results_list])
+
+    # Compute mean and std for each time step
+    mean_utility_mu = np.mean(mean_utility_arr, axis=0)
+    mean_utility_std = np.std(mean_utility_arr, axis=0)
+    mean_econ_utility_mu = np.mean(mean_econ_utility_arr, axis=0)
+    mean_econ_utility_std = np.std(mean_econ_utility_arr, axis=0)
+    mean_social_utility_mu = np.mean(mean_social_utility_arr, axis=0)
+    mean_social_utility_std = np.std(mean_social_utility_arr, axis=0)
+
+    fig_util, ax_util = plt.subplots()
+    # Plot mean lines
+    ax_util.plot(steps_arr, mean_utility_mu, label="Overall Utility", color="blue")
+    ax_util.plot(steps_arr, mean_econ_utility_mu, label="Economic Utility", color="green")
+    ax_util.plot(steps_arr, mean_social_utility_mu, label="Social Utility", color="orange")
+    # Plot std shaded area
+    ax_util.fill_between(steps_arr, mean_utility_mu - mean_utility_std, mean_utility_mu + mean_utility_std, color="blue", alpha=0.2)
+    ax_util.fill_between(steps_arr, mean_econ_utility_mu - mean_econ_utility_std, mean_econ_utility_mu + mean_econ_utility_std, color="green", alpha=0.2)
+    ax_util.fill_between(steps_arr, mean_social_utility_mu - mean_social_utility_std, mean_social_utility_mu + mean_social_utility_std, color="orange", alpha=0.2)
+    ax_util.set_xlabel("Step")
+    ax_util.set_ylabel("Utility (EUR/ha)")
+    ax_util.set_title("Utility Over Time (Mean ± Std)")
+    ax_util.legend()
+    st.pyplot(fig_util)
+    fig_util.savefig(output_dir / "utility_plot.png")
 
     # CSV download button
-    st.download_button("Download Results CSV", data=df.to_csv(index=False), file_name="abm_results.csv")
-
+    st.download_button("Download Monte Carlo Results CSV", data=df_mc.to_csv(index=False), file_name="monte_carlo_stats.csv")
 
 else:
     st.info("Set parameters and click Run Simulation.")

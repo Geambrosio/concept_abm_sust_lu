@@ -197,3 +197,16 @@ def run_simulation(model, steps=50):
         "utility_social_per_agent": (["step", "agent"], np.stack(utility_social_per_agent)),
     }, coords={"step": steps_arr, "agent": agent_dim})
     return ds
+
+# Monte Carlo simulation: run ABM multiple times with different seeds
+def monte_carlo_runs(n_runs, steps=50, seed_base=42, **model_params):
+    """
+    Run the ABM n_runs times, each with a different random seed.
+    Returns a list of xarray Datasets (one per run).
+    """
+    results_list = []
+    for i in range(n_runs):
+        model = PeatlandABM(seed=seed_base + i, **model_params)
+        ds = run_simulation(model, steps)
+        results_list.append(ds)
+    return results_list

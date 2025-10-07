@@ -5,7 +5,7 @@
 import pandas as pd
 import numpy as np
 
-def generate_profit_data(n_agents=100, mean_conv=1500, std_conv=200, mean_nat=1450, std_nat=250, seed=42, filename="profits_agents.csv"):
+def generate_profit_data(n_agents=500, mean_conv=1500, std_conv=200, mean_nat=1450, std_nat=250, seed=42, filename="profits_agents.csv"):
     """
     Generates a CSV file with randomized profit values for conventional and
     nature-based agriculture for each agent.

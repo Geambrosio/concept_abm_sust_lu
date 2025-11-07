@@ -13,6 +13,11 @@ class PeatlandABM:
     Agent-based model where each agent (farmer) decides whether to adopt
     a nature-inclusive practice based on economic and peer influence.
     Uses real units for emissions (t CO2-eq/ha/year) and monetary values (EUR/ha/year).
+    
+    Emission values based on empirical data from:
+    https://doi.org/10.5194/bg-21-4099-2024
+    - Conventional peatland agriculture: 3.77 tCO2-eq/ha/year
+    - Water infiltration systems: 2.66 tCO2-eq/ha/year
     """
 
     def __init__(self, n_agents=500, subsidy_eur_per_ha=100.0, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7, social_capital_factor=100, scaling_factor=100, initial_share_adopters=0.05, profits_csv='profits_agents.csv'):
@@ -109,10 +114,14 @@ class PeatlandABM:
                 self.profit_weights.values[i] = np.clip(self.profit_weights.values[i], 0.5, 2.0)
 
         # Emissions: adopters emit less (t CO2-eq/ha/year)
-        emis = 5.0 * (1 - 0.5 * self.adopt.values)  # non-adopter: 5, adopter: 2.5
+        # Based on empirical data from https://doi.org/10.5194/bg-21-4099-2024
+        # Conventional: 3.77 tCO2-eq/ha/year, Water infiltration: 2.66 tCO2-eq/ha/year
+        conventional_emissions = 3.77
+        nature_based_emissions = 2.66
+        emis = conventional_emissions * (1 - self.adopt.values) + nature_based_emissions * self.adopt.values
 
         # New: compute policy cost & cost-effectiveness (per ha)
-        baseline = 5.0  # t CO2-eq/ha/year under conventional
+        baseline = conventional_emissions  # t CO2-eq/ha/year under conventional
         adoption_rate = float(np.mean(self.adopt))
         avg_emiss = float(np.mean(emis))
         emisssions_reduced = max(baseline - avg_emiss, 0.0) # t CO2-eq/ha/year reduced never negative

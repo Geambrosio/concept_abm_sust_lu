@@ -18,9 +18,13 @@ class PeatlandABM:
     https://doi.org/10.5194/bg-21-4099-2024
     - Conventional peatland agriculture: 3.77 tCO2-eq/ha/year
     - Water infiltration systems: 2.66 tCO2-eq/ha/year
+    
+    Risk aversion factor based on empirical data from:
+    https://doi.org/10.1002/aepp.13330
+    Rommel et al. 2022 - Loss aversion factor of 1.2 for Dutch agricultural sector
     """
 
-    def __init__(self, n_agents=500, subsidy_eur_per_ha=100.0, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7, social_capital_factor=100, scaling_factor=100, initial_share_adopters=0.05, profits_csv='profits_agents.csv'):
+    def __init__(self, n_agents=500, subsidy_eur_per_ha=100.0, seed=42, stay_adopter_prob=0.9, hetero_persistence=True, alpha=0.7, social_capital_factor=100, scaling_factor=100, initial_share_adopters=0.05, profits_csv='profits_agents.csv', risk_aversion_factor=1.2):
         self.n = n_agents  # Number of agents (farmers)
         self.subsidy_eur_per_ha = subsidy_eur_per_ha  # Subsidy paid to adopters (EUR/ha/year)
 
@@ -43,6 +47,7 @@ class PeatlandABM:
         self.alpha = alpha  # Weight for economic vs social utility
         self.social_capital_factor = social_capital_factor  # Social pressure factor
         self.scaling_factor = scaling_factor  # Logistic scaling factor
+        self.risk_aversion_factor = risk_aversion_factor  # Loss aversion factor from prospect theory
 
         # Always randomize stay_adopter_probs per agent
         self.stay_adopter_probs = xr.DataArray(
@@ -67,8 +72,21 @@ class PeatlandABM:
         # Calculate average adoption in the population (as a peer proxy)
         peer_share = float(self.adopt.mean())
 
-        # Calculate economic utility of adoption of nature-based practices (now in real EUR/ha/year, no normalization)
-        econ_utility = self.subsidy_eur_per_ha - self.profit_weights * self.profit_conventional + self.profit_weights * self.profit_nature_based
+        # Calculate economic utility of adoption of nature-based practices using prospect theory
+        # Profit change from adopting nature-based practices (subsidy + profit difference)
+        profit_change = self.subsidy_eur_per_ha - self.profit_diff_eur_per_ha
+
+        # Calculate economic utility using prospect theory
+        # Step 1: Apply prospect theory to each agent's profit change
+        prospect_values = []  # Will store the prospect theory value for each agent
+        for i in range(self.n):
+            agent_profit_change = float(profit_change.values[i])  # Get this agent's profit change
+            agent_prospect_value = self.prospect_value(agent_profit_change)  # Apply prospect theory
+            prospect_values.append(agent_prospect_value)
+
+        # Step 2: Convert to xarray and multiply by profit weights
+        prospect_values_array = xr.DataArray(prospect_values, dims=["agent"])
+        econ_utility = self.profit_weights * prospect_values_array
 
         # Monetize social utility to make it comparable
         social_utility = self.social_capital_factor * self.peer_weights * peer_share
@@ -150,6 +168,24 @@ class PeatlandABM:
             "mean_social_utility": mean_social_utility,
             "utility_social_per_agent": utility_social_per_agent
         }
+
+    def prospect_value(self, profit_change):
+        """
+        Apply prospect theory value function with loss aversion.
+        
+        Args:
+            profit_change: Change in profit (EUR/ha/year) - can be positive or negative
+            
+        Returns:
+            Value under prospect theory (dimensionless)
+        """
+        # Reference point is 0 (no change from current profit)
+        if profit_change >= 0:
+            # Gains: value = profit_change^0.88 (concave for gains)
+            return profit_change ** 0.88
+        else:
+            # Losses: value = -self.risk_aversion_factor * |profit_change|^0.88 (convex for losses)
+            return -self.risk_aversion_factor * (abs(profit_change) ** 0.88)
 
 # Run the model over multiple time steps
 def run_simulation(model, steps=50):

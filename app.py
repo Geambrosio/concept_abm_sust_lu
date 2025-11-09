@@ -1,246 +1,288 @@
-# ---------------------------------------------
-# app.py — Streamlit UI for Peatland ABM demo
-# ---------------------------------------------
-
-# Import Streamlit for web UI, NumPy for math, Pandas for tables, and Matplotlib for plots
 import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
-# Imports for file handling and date/time
-import os
 from pathlib import Path
 from datetime import datetime
-import json
 
-# Import ABM model logic
-from model import PeatlandABM, run_simulation
+from model import PeatlandABM, run_simulation, monte_carlo_runs
 
-# Set web page title and layout
-st.set_page_config(page_title="Peatland ABM", layout="wide")
 
-# Title and description
-st.title("Conceptual Agent-Based Model of Sustainable Land-Use Farming Adoption")
-st.write("This interactive demo explores sustainable land-use adoption using a utility function that combines social and economic components at the farmer level (peer and economic weights) and a regional context parameter (alpha).")
+st.set_page_config(page_title='Peatland ABM', layout='wide')
 
-# Sidebar: model parameters
+st.title('Peatland Adoption Model with Intention-Adoption Split')
+st.write(
+    "Simulate peatland farmers' adoption decisions with an explicit intention stage, "
+    "prospect-theory economics (Rommel et al., 2022), and emissions factors from van Leeuwen et al. (2024)."
+)
+
+if "simulation_complete" not in st.session_state:
+    st.session_state["simulation_complete"] = False
+
 with st.sidebar:
-    st.markdown("---")
-    st.subheader("Monte Carlo Simulation")
+    st.markdown('---')
+    st.subheader('Simulation Setup')
+    n_agents = st.slider('Number of farmers', 50, 1000, 500, 50)
+    steps = st.slider('Simulation steps', 10, 200, 50, 10, help='Number of periods to simulate.')
     n_runs = st.number_input(
-        "Number of Monte Carlo Runs", min_value=1, max_value=500, value=1, step=1,
-        help="How many times to repeat the simulation with different random seeds.")
+        'Monte Carlo runs', min_value=1, max_value=500, value=1, step=1,
+        help='How many seeds to evaluate for the Monte Carlo ensemble.'
+    )
     seed_base = st.number_input(
-        "Monte Carlo Seed Base", value=42, step=1,
-        help="Base seed for reproducibility. Each run uses seed_base + run_index.")
-    st.header("Model Equations & Parameters")
-
-    # Utility Calculation
-    st.latex(r"U_i = \alpha \cdot U_{econ,i} + (1 - \alpha) \cdot U_{social,i}")
-    st.latex(r"U_{econ,i} = S - w^{(p)}_i \cdot P^{(conv)}_i + w^{(p)}_i \cdot P^{(nat)}_i")
-    st.latex(r"U_{social,i} = SCF \cdot w^{(s)}_i \cdot \phi")
-    st.markdown("**Parameters for Utility Calculation:**")
-    subsidy_eur_per_ha = st.slider(
-        "Subsidy for adoption $S$ (EUR/ha/year)", 0.0, 500.0, 100.0, 10.0,
-        help="Annual subsidy paid to adopters. Higher values increase economic utility.")
-    alpha = st.slider(
-        "Alpha $\alpha$ (Economic vs Social Weight)", 0.0, 1.0, 0.7, 0.05,
-        help="Relative weight of economic utility vs social utility. 1 = only economic, 0 = only social.")
-    social_capital_factor = st.slider(
-        "Social Capital Factor $SCF$ (EUR/ha)", 0, 1000, 500, 50,
-        help="Maximum value of social pressure. Higher values make peer influence stronger.")
-    initial_share_adopters = st.slider(
-        "Initial Share of Adopters $\phi$ (%)", 0, 100, 5, 1,
-        help="Percentage of agents starting as adopters.")
-
-    st.markdown("---")
-    # Adoption Probability
-    st.latex(r"p_i = \frac{1}{1 + \exp\left(-\frac{U_i}{k}\right)}")
-    scaling_factor = st.slider(
-        "Adoption Sensitivity $k$ (Logistic Scaling Factor)", 50, 500, 100, 10,
-        help="Controls how sensitive adoption probability is to utility. Higher = less sensitive.")
-
-    st.markdown("---")
-    # Agent Heterogeneity
-    st.latex(r"w^{(p)}_i, w^{(s)}_i \in [0.5, 2.0]")
-    profit_weight_min, profit_weight_max = st.slider(
-        "Profit Weight Range $w^{(p)}_i$", 0.5, 2.0, (0.5, 2.0), 0.05,
-        help="Range for agent profit weights. Higher = more profit-driven.")
-    peer_weight_min, peer_weight_max = st.slider(
-        "Peer Weight Range $w^{(s)}_i$", 0.5, 2.0, (0.5, 2.0), 0.05,
-        help="Range for agent peer weights. Higher = more peer-driven.")
-    stay_adopter_prob_min, stay_adopter_prob_max = st.slider(
-        "Stay Adopter Probability Range", 0.7, 0.99, (0.7, 0.99), 0.05,
-        help="Probability that an adopter remains an adopter at each step.")
-
-    st.markdown("---")
-    # Learning Rates
-    st.latex(r"w^{(s)}_i(t+1) = w^{(s)}_i(t) + \lambda_{social} (\phi(t) - w^{(s)}_i(t))")
-    st.latex(r"w^{(p)}_i(t+1) = w^{(p)}_i(t) + \lambda_{econ} (U_{econ,i}(t) - w^{(p)}_i(t))")
-    social_learning_rate = st.slider(
-        "Social Learning Rate $\lambda_{social}$", 0.0, 1.0, 0.1, 0.05,
-        help="How quickly agents update peer weights based on observed adoption.")
-    econ_learning_rate = st.slider(
-        "Economic Learning Rate $\lambda_{econ}$", 0.0, 1.0, 0.1, 0.05,
-        help="How quickly agents update profit weights based on economic experience.")
-
-    st.markdown("---")
-    # Emissions and Policy Cost
-    st.latex(r"E_i = 5.0 \cdot (1 - 0.5 \cdot A_i)")
-    st.latex(r"\text{PolicyCost}_{ha} = S \cdot \phi")
-    st.latex(r"\text{EmissionsSaved}_{ha} = \max(5.0 - \overline{E}, 0)")
-    st.latex(r"\text{CostPerTonne} = \frac{\text{PolicyCost}_{ha}}{\text{EmissionsSaved}_{ha}}")
-    steps = st.slider(
-        "Simulation Steps", 10, 200, 50, 10,
-        help="Number of time steps to run the simulation.")
+        'Monte Carlo seed base', value=42, step=1,
+        help='Run i uses seed_base + i for reproducibility.'
+    )
     seed = st.number_input(
-        "Random Seed", value=42, step=1,
-        help="Seed for random number generation (reproducibility).")
-
-# Run button
-
-if st.button("Run Simulation"):
-    # Prepare model parameters
-    model_params = dict(
-        subsidy_eur_per_ha=subsidy_eur_per_ha,
-        alpha=alpha,
-        social_capital_factor=social_capital_factor,
-        scaling_factor=scaling_factor,
-        initial_share_adopters=initial_share_adopters / 100.0
+        'Primary random seed', value=42, step=1,
+        help='Used when running a single simulation.'
     )
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(f"outputs/monte_carlo_run_{timestamp}")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Run Monte Carlo or single simulation
-    if n_runs == 1:
-        from model import run_simulation
-        model = PeatlandABM(seed=seed, **model_params)
-        ds = run_simulation(model, steps)
-        results_list = [ds]
-    else:
-        from model import monte_carlo_runs
-        results_list = monte_carlo_runs(n_runs, steps=steps, seed_base=seed_base, **model_params)
-
-    # Utility: initial vs final step (Monte Carlo)
-    mean_utility = np.stack([ds['mean_utility'].values for ds in results_list])
-    # Initial step stats
-    initial_mean = mean_utility[:, 0]
-    initial_mean_mu = np.mean(initial_mean)
-    initial_mean_std = np.std(initial_mean)
-    initial_mean_q25 = np.percentile(initial_mean, 25)
-    initial_mean_q75 = np.percentile(initial_mean, 75)
-    # Final step stats
-    final_mean = mean_utility[:, -1]
-    final_mean_mu = np.mean(final_mean)
-    final_mean_std = np.std(final_mean)
-    final_mean_q25 = np.percentile(final_mean, 25)
-    final_mean_q75 = np.percentile(final_mean, 75)
-    # Prepare model parameters
-    model_params = dict(
-        subsidy_eur_per_ha=subsidy_eur_per_ha,
-        alpha=alpha,
-        social_capital_factor=social_capital_factor,
-        scaling_factor=scaling_factor,
-        initial_share_adopters=initial_share_adopters / 100.0
+    st.markdown('---')
+    st.subheader('Policy & Initial Conditions')
+    subsidy_eur_per_ha = st.slider(
+        'Subsidy S (EUR/ha/year)', 0.0, 500.0, 100.0, 10.0,
+        help='Annual subsidy paid to adopters.'
+    )
+    hetero_persistence = st.checkbox(
+        'Heterogeneous adopter persistence', value=True,
+        help='If selected, each adopter draws their own stay probability in [0.7, 0.99].'
+    )
+    stay_adopter_prob = st.slider(
+        'Stay-adopter probability (if homogeneous)', 0.5, 0.99, 0.90, 0.01,
+        help='Used only when heterogeneity is disabled.'
     )
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(f"outputs/monte_carlo_run_{timestamp}")
+    st.markdown('---')
+    st.subheader('Stage A - Intention Formation')
+    st.latex(r"I_i = w_{econ} \tilde{U}_{econ,i} + w_{soc} \tilde{U}_{soc,i} + w_{pers} V_i + w_{self} B_i + b")
+    st.latex(r"p^{intent}_i = \sigma\!\left(T \cdot I_i\right)")
+    risk_aversion_factor = st.slider(
+        'Loss aversion lambda', 0.5, 3.0, 1.2, 0.1,
+        help='Prospect theory loss aversion parameter (Rommel et al., 2022).'
+    )
+    weight_econ = st.slider('Weight: economic (w_econ)', 0.0, 3.0, 1.0, 0.1)
+    weight_social = st.slider('Weight: social (w_soc)', 0.0, 3.0, 1.0, 0.1)
+    weight_personal = st.slider('Weight: personal values (w_pers)', 0.0, 3.0, 0.6, 0.1)
+    weight_self = st.slider('Weight: self-belief (w_self)', 0.0, 3.0, 0.6, 0.1)
+    intention_intercept = st.slider('Intercept b', -2.0, 2.0, 0.0, 0.1)
+    intention_temperature = st.slider('Sigmoid temperature T', 0.1, 5.0, 1.0, 0.1)
+
+    st.markdown('---')
+    st.subheader('Learning Dynamics')
+    social_learning_rate = st.slider('Social learning rate', 0.0, 1.0, 0.1, 0.01)
+    econ_learning_rate = st.slider('Economic learning rate', 0.0, 1.0, 0.1, 0.01)
+
+    st.markdown('---')
+    st.subheader('Stage B - Adoption Friction')
+    st.latex(r"p^{adopt}_i = p^{intent}_i \cdot C_i \cdot O_i")
+    st.write("Capability and opportunity are now loaded from the CSV file.")
+
+st.markdown('---')
+run_clicked = st.button('Run simulation')
+
+if run_clicked:
+    st.session_state['simulation_complete'] = True
+
+    weights = {
+        'econ': weight_econ,
+        'social': weight_social,
+        'personal': weight_personal,
+        'self': weight_self,
+    }
+
+    model_params = dict(
+        n_agents=int(n_agents),
+        subsidy_eur_per_ha=float(subsidy_eur_per_ha),
+        risk_aversion_factor=float(risk_aversion_factor),
+        hetero_persistence=bool(hetero_persistence),
+        stay_adopter_prob=float(stay_adopter_prob),
+        intention_weights=weights,
+        intention_intercept=float(intention_intercept),
+        intention_steepness=float(intention_temperature),
+        social_learning_rate=float(social_learning_rate),
+        econ_learning_rate=float(econ_learning_rate),
+    )
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_dir = Path(f'outputs/monte_carlo_run_{timestamp}')
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Run Monte Carlo or single simulation
-    if n_runs == 1:
-        from model import run_simulation
-        model = PeatlandABM(seed=seed, **model_params)
-        ds = run_simulation(model, steps)
-        results_list = [ds]
-    else:
-        from model import monte_carlo_runs
-        results_list = monte_carlo_runs(n_runs, steps=steps, seed_base=seed_base, **model_params)
+    with st.spinner('Running simulations...'):
+        if int(n_runs) == 1:
+            model = PeatlandABM(seed=int(seed), **model_params)
+            ds = run_simulation(model, int(steps))
+            results_list = [ds]
+        else:
+            results_list = monte_carlo_runs(
+                int(n_runs), steps=int(steps), seed_base=int(seed_base), **model_params
+            )
 
-    # Aggregate results
-    # Stack metrics for each run
-    metrics = ["adoption_rate", "avg_emissions_tCO2_ha", "policy_cost_eur_per_ha", "cost_per_tonne_eur_per_tCO2"]
+    metrics = [
+        'adoption_rate',
+        'intention_rate',
+        'avg_emissions_tCO2_ha',
+        'policy_cost_eur_per_ha',
+        'cost_per_tonne_eur_per_tCO2',
+    ]
     stacked = {m: np.stack([ds[m].values for ds in results_list]) for m in metrics}
-    steps_arr = results_list[0].coords["step"].values
+    steps_arr = results_list[0].coords['step'].values
 
-    # Compute mean, std, 25th, 75th percentiles
     agg = {}
-    for m in metrics:
-        agg[f"{m}_mean"] = np.mean(stacked[m], axis=0)
-        agg[f"{m}_std"] = np.std(stacked[m], axis=0)
-        agg[f"{m}_q25"] = np.percentile(stacked[m], 25, axis=0)
-        agg[f"{m}_q75"] = np.percentile(stacked[m], 75, axis=0)
+    for m, arr in stacked.items():
+        agg[f'{m}_mean'] = np.nanmean(arr, axis=0)
+        agg[f'{m}_std'] = np.nanstd(arr, axis=0)
+        agg[f'{m}_q25'] = np.nanpercentile(arr, 25, axis=0)
+        agg[f'{m}_q75'] = np.nanpercentile(arr, 75, axis=0)
 
-    # Save aggregated results to CSV
-    df_mc = pd.DataFrame({"step": steps_arr})
-    for k, v in agg.items():
-        df_mc[k] = v
-    df_mc.to_csv(output_dir / "monte_carlo_stats.csv", index=False)
+    df_mc = pd.DataFrame({'step': steps_arr})
+    for key, values in agg.items():
+        df_mc[key] = values
+    df_mc.to_csv(output_dir / 'monte_carlo_stats.csv', index=False)
 
-    # Display results table
-    st.subheader("Monte Carlo Results (first 5 rows)")
-    st.dataframe(df_mc.head(5))
-
-    # Plot mean ± std for adoption rate
-    st.subheader("Adoption Rate Over Time (Monte Carlo)")
-    fig, ax = plt.subplots()
-    ax.plot(steps_arr, agg['adoption_rate_mean'], label="Mean Adoption Rate")
-    ax.fill_between(steps_arr, agg['adoption_rate_mean'] - agg['adoption_rate_std'], agg['adoption_rate_mean'] + agg['adoption_rate_std'], alpha=0.3, label="±1 Std Dev")
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Share of Adopters")
-    ax.legend()
-    st.pyplot(fig)
-    fig.savefig(output_dir / "adoption_plot.png")
-
-    # Plot mean ± std for emissions
-    st.subheader("Average Emissions Over Time (Monte Carlo)")
-    fig2, ax2 = plt.subplots()
-    ax2.plot(steps_arr, agg['avg_emissions_tCO2_ha_mean'], label="Mean Emissions", color='red')
-    ax2.fill_between(steps_arr, agg['avg_emissions_tCO2_ha_mean'] - agg['avg_emissions_tCO2_ha_std'], agg['avg_emissions_tCO2_ha_mean'] + agg['avg_emissions_tCO2_ha_std'], alpha=0.3, label="±1 Std Dev", color='red')
-    ax2.set_xlabel("Step")
-    ax2.set_ylabel("Avg Emissions (t CO₂-eq/ha/year)")
-    ax2.legend()
-    st.pyplot(fig2)
-    fig2.savefig(output_dir / "emissions_plot.png")
-
-    # Utility figure (now last)
-    st.subheader("Utility Over Time (Monte Carlo)")
-    steps_arr = results_list[0].coords["step"].values
-    # Stack all runs for each utility type
     mean_utility_arr = np.stack([ds['mean_utility'].values for ds in results_list])
-    mean_econ_utility_arr = np.stack([ds['mean_econ_utility'].values for ds in results_list])
-    mean_social_utility_arr = np.stack([ds['mean_social_utility'].values for ds in results_list])
+    mean_econ_arr = np.stack([ds['mean_econ_utility'].values for ds in results_list])
+    mean_social_arr = np.stack([ds['mean_social_utility'].values for ds in results_list])
+    utility_summary = {
+        'overall': (np.mean(mean_utility_arr, axis=0), np.std(mean_utility_arr, axis=0)),
+        'economic': (np.mean(mean_econ_arr, axis=0), np.std(mean_econ_arr, axis=0)),
+        'social': (np.mean(mean_social_arr, axis=0), np.std(mean_social_arr, axis=0)),
+    }
 
-    # Compute mean and std for each time step
-    mean_utility_mu = np.mean(mean_utility_arr, axis=0)
-    mean_utility_std = np.std(mean_utility_arr, axis=0)
-    mean_econ_utility_mu = np.mean(mean_econ_utility_arr, axis=0)
-    mean_econ_utility_std = np.std(mean_econ_utility_arr, axis=0)
-    mean_social_utility_mu = np.mean(mean_social_utility_arr, axis=0)
-    mean_social_utility_std = np.std(mean_social_utility_arr, axis=0)
+    final_adoption_mean = agg['adoption_rate_mean'][-1]
+    final_intention_mean = agg['intention_rate_mean'][-1]
+    st.success(f'Mean adoption rate after {int(steps)} steps: {final_adoption_mean:.1%}')
+    st.caption(
+        f'Mean intention rate ends at {final_intention_mean:.1%}, giving an intention-adoption gap of '
+        f'{(final_intention_mean - final_adoption_mean):+.1%}.'
+    )
 
+    first_ds = results_list[0]
+    adoption_series = first_ds['adoption_rate'].values
+    intention_series = first_ds['intention_rate'].values
+    col1, col2 = st.columns(2)
+    col1.metric(
+        'Adoption rate (first run, final step)',
+        f'{adoption_series[-1]:.1%}',
+        delta=f'{(adoption_series[-1] - adoption_series[0]):+.1%}',
+    )
+    col2.metric(
+        'Intention rate (first run, final step)',
+        f'{intention_series[-1]:.1%}',
+        delta=f'{(intention_series[-1] - intention_series[0]):+.1%}',
+    )
+
+    st.subheader('Monte Carlo summary (first five rows)')
+    st.dataframe(df_mc.head())
+    st.download_button(
+        'Download Monte Carlo summary CSV',
+        data=df_mc.to_csv(index=False),
+        file_name='monte_carlo_stats.csv',
+    )
+
+    adoption_low = np.clip(agg['adoption_rate_mean'] - agg['adoption_rate_std'], 0.0, 1.0)
+    adoption_high = np.clip(agg['adoption_rate_mean'] + agg['adoption_rate_std'], 0.0, 1.0)
+    intention_low = np.clip(agg['intention_rate_mean'] - agg['intention_rate_std'], 0.0, 1.0)
+    intention_high = np.clip(agg['intention_rate_mean'] + agg['intention_rate_std'], 0.0, 1.0)
+
+    st.subheader('Intention vs adoption over time')
+    fig_beh, ax_beh = plt.subplots()
+    ax_beh.plot(steps_arr, agg['intention_rate_mean'], label='Intention rate', color='tab:orange')
+    ax_beh.fill_between(steps_arr, intention_low, intention_high, alpha=0.2, color='tab:orange')
+    ax_beh.plot(steps_arr, agg['adoption_rate_mean'], label='Adoption rate', color='tab:blue')
+    ax_beh.fill_between(steps_arr, adoption_low, adoption_high, alpha=0.2, color='tab:blue')
+    ax_beh.set_xlabel('Step')
+    ax_beh.set_ylabel('Share of agents')
+    ax_beh.set_ylim(0, 1)
+    ax_beh.grid(alpha=0.3)
+    ax_beh.legend()
+    st.pyplot(fig_beh)
+    fig_beh.savefig(output_dir / 'intention_adoption_plot.png')
+
+    st.subheader('Average emissions trajectory')
+    emis_low = agg['avg_emissions_tCO2_ha_mean'] - agg['avg_emissions_tCO2_ha_std']
+    emis_high = agg['avg_emissions_tCO2_ha_mean'] + agg['avg_emissions_tCO2_ha_std']
+    fig_emis, ax_emis = plt.subplots()
+    ax_emis.plot(
+        steps_arr, agg['avg_emissions_tCO2_ha_mean'], label='Mean emissions', color='tab:red'
+    )
+    ax_emis.fill_between(steps_arr, emis_low, emis_high, alpha=0.2, color='tab:red')
+    ax_emis.set_xlabel('Step')
+    ax_emis.set_ylabel('t CO$_2$-eq/ha/year')
+    ax_emis.grid(alpha=0.3)
+    ax_emis.legend()
+    st.pyplot(fig_emis)
+    fig_emis.savefig(output_dir / 'emissions_plot.png')
+
+    st.subheader('Utility decomposition')
+    util_mean, util_std = utility_summary['overall']
+    econ_mean, econ_std = utility_summary['economic']
+    social_mean, social_std = utility_summary['social']
     fig_util, ax_util = plt.subplots()
-    # Plot mean lines
-    ax_util.plot(steps_arr, mean_utility_mu, label="Overall Utility", color="blue")
-    ax_util.plot(steps_arr, mean_econ_utility_mu, label="Economic Utility", color="green")
-    ax_util.plot(steps_arr, mean_social_utility_mu, label="Social Utility", color="orange")
-    # Plot std shaded area
-    ax_util.fill_between(steps_arr, mean_utility_mu - mean_utility_std, mean_utility_mu + mean_utility_std, color="blue", alpha=0.2)
-    ax_util.fill_between(steps_arr, mean_econ_utility_mu - mean_econ_utility_std, mean_econ_utility_mu + mean_econ_utility_std, color="green", alpha=0.2)
-    ax_util.fill_between(steps_arr, mean_social_utility_mu - mean_social_utility_std, mean_social_utility_mu + mean_social_utility_std, color="orange", alpha=0.2)
-    ax_util.set_xlabel("Step")
-    ax_util.set_ylabel("Utility (EUR/ha)")
-    ax_util.set_title("Utility Over Time (Mean ± Std)")
+    ax_util.plot(steps_arr, util_mean, label='Overall utility', color='tab:blue')
+    ax_util.fill_between(steps_arr, util_mean - util_std, util_mean + util_std, color='tab:blue', alpha=0.2)
+    ax_util.plot(steps_arr, econ_mean, label='Economic utility', color='tab:green')
+    ax_util.fill_between(steps_arr, econ_mean - econ_std, econ_mean + econ_std, color='tab:green', alpha=0.2)
+    ax_util.plot(steps_arr, social_mean, label='Social utility', color='tab:orange')
+    ax_util.fill_between(steps_arr, social_mean - social_std, social_mean + social_std, color='tab:orange', alpha=0.2)
+    ax_util.set_xlabel('Step')
+    ax_util.set_ylabel('Utility (EUR/ha)')
+    ax_util.grid(alpha=0.3)
     ax_util.legend()
     st.pyplot(fig_util)
-    fig_util.savefig(output_dir / "utility_plot.png")
+    fig_util.savefig(output_dir / 'utility_plot.png')
 
-    # CSV download button
-    st.download_button("Download Monte Carlo Results CSV", data=df_mc.to_csv(index=False), file_name="monte_carlo_stats.csv")
+    st.subheader('Agent-level diagnostics (final step, first run)')
+    final_diag = pd.DataFrame(
+        {
+            'Intention probability': first_ds['intention_prob_per_agent'].values[-1],
+            'Adoption probability': first_ds['adoption_prob_per_agent'].values[-1],
+            'Capability': first_ds['capability_per_agent'].values[-1],
+            'Opportunity': first_ds['opportunity_per_agent'].values[-1],
+            'Profit change (EUR/ha)': first_ds['expected_profit_change_eur_per_ha'].values[-1],
+        }
+    )
+    with st.expander('Show agent distributions', expanded=False):
+        st.dataframe(final_diag.describe(percentiles=[0.1, 0.5, 0.9]).T)
 
-else:
-    st.info("Set parameters and click Run Simulation.")
+        fig_scatter, ax_scatter = plt.subplots()
+        ax_scatter.scatter(
+            final_diag['Intention probability'],
+            final_diag['Adoption probability'],
+            alpha=0.4,
+            s=18,
+            label='Agent',
+        )
+        ax_scatter.plot([0, 1], [0, 1], linestyle='--', color='grey', linewidth=1, label='p_intent = p_adopt')
+        ax_scatter.set_xlabel('Intention probability')
+        ax_scatter.set_ylabel('Adoption probability')
+        ax_scatter.set_xlim(0, 1)
+        ax_scatter.set_ylim(0, 1)
+        ax_scatter.grid(alpha=0.2)
+        ax_scatter.legend()
+        st.pyplot(fig_scatter)
+        fig_scatter.savefig(output_dir / 'intention_vs_adoption_scatter.png')
+
+        fig_hist, ax_hist = plt.subplots()
+        ax_hist.hist(final_diag['Intention probability'], bins=30, alpha=0.6, label='Intention', color='tab:orange')
+        ax_hist.hist(final_diag['Adoption probability'], bins=30, alpha=0.6, label='Adoption', color='tab:blue')
+        ax_hist.set_xlabel('Probability')
+        ax_hist.set_ylabel('Number of agents')
+        ax_hist.legend()
+        ax_hist.grid(alpha=0.2)
+        st.pyplot(fig_hist)
+        fig_hist.savefig(output_dir / 'intention_adoption_hist.png')
+
+        fig_cap, ax_cap = plt.subplots()
+        ax_cap.hist(final_diag['Capability'], bins=30, alpha=0.6, label='Capability', color='tab:green')
+        ax_cap.hist(final_diag['Opportunity'], bins=30, alpha=0.6, label='Opportunity', color='tab:purple')
+        ax_cap.set_xlabel('Scaled factor')
+        ax_cap.set_ylabel('Number of agents')
+        ax_cap.legend()
+        ax_cap.grid(alpha=0.2)
+        st.pyplot(fig_cap)
+        fig_cap.savefig(output_dir / 'capability_opportunity_hist.png')
+
+    st.caption(f'Outputs saved to `{output_dir}`.')
+
+elif not st.session_state['simulation_complete']:
+    st.info('Adjust parameters in the sidebar and click Run simulation.')

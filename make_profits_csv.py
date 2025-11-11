@@ -33,27 +33,73 @@ def generate_profit_data(
 
     # Generate profit for conventional agriculture
     profit_conventional = rng.normal(loc=mean_conv, scale=std_conv, size=n_agents)
-    profit_conventional = np.clip(profit_conventional, 1000, 2000)  # Clip to a realistic range
+    profit_conventional = np.clip(profit_conventional, 1000, 2000)
 
     # Generate profit for nature-based agriculture
     profit_nature_based = rng.normal(loc=mean_nat, scale=std_nat, size=n_agents)
-    profit_nature_based = np.clip(profit_nature_based, 900, 1900)  # Clip to a realistic range
+    profit_nature_based = np.clip(profit_nature_based, 900, 1900)
 
-    # Generate behavioural and capability inputs to mirror model defaults
-    personal_values = np.clip(rng.normal(0.0, 0.4, size=n_agents), -1.0, 1.0)
+    expected_profit_diff = profit_conventional - profit_nature_based
+
+    # Land variables with correlations among them
+    land_corr = np.array([
+        [1.0, -0.2, -0.1],
+        [-0.2, 1.0, 0.3],
+        [-0.1, 0.3, 1.0],
+    ])
+    land_corr = (land_corr + land_corr.T) / 2
+    np.fill_diagonal(land_corr, 1.0)
+    land_data = rng.multivariate_normal(np.zeros(3), land_corr, size=n_agents)
+    area_ha = np.clip((land_data[:, 0] + 1.0) / 2.0 * 9.0 + 1.0, 1.0, 10.0)
+    carbon_stock = np.clip(land_data[:, 1] * 10.0 + 50.0, 0.0, 100.0)
+    fauna_abundance = np.clip((land_data[:, 2] + 1.0) / 2.0, 0.0, 1.0)
+
+    # Environmental values linked to land quality with idiosyncratic variation
+    env_base = rng.normal(0.0, 0.35, size=n_agents)
+    area_term = -0.1 * (area_ha - 5.5) / 3.0
+    carbon_term = 0.3 * (carbon_stock - 50.0) / 10.0
+    fauna_term = 0.3 * (fauna_abundance - 0.5)
+    environmental_value = np.clip(env_base + area_term + carbon_term + fauna_term, -1.0, 1.0)
+
+    # Behavioural and capability inputs (kept mostly independent)
     social_weights = np.clip(rng.uniform(0.5, 2.0, size=n_agents), 0.5, 2.0)
     profit_weights = np.clip(rng.uniform(0.5, 2.0, size=n_agents), 0.5, 2.0)
     stay_probs = np.clip(rng.uniform(0.7, 0.99, size=n_agents), 0.7, 0.99)
-    initial_adopt = rng.binomial(1, 0.05, size=n_agents)
     self_belief = np.clip(rng.beta(2.0, 2.0, size=n_agents), 0.0, 1.0)
-    capability = np.clip(rng.uniform(0.6, 0.95, size=n_agents), 0.0, 1.0)
-    opportunity = np.clip(rng.uniform(0.5, 0.95, size=n_agents), 0.0, 1.0)
+    capability = np.clip(rng.uniform(0.5, 0.9, size=n_agents), 0.0, 1.0)
+    opportunity = np.clip(rng.uniform(0.45, 0.9, size=n_agents), 0.0, 1.0)
 
-    # Generate land-related attributes
-    area_ha = rng.uniform(1.0, 10.0, size=n_agents)  # Area in hectares
-    carbon_stock = rng.normal(50.0, 10.0, size=n_agents)  # Carbon stock in t/ha
-    carbon_stock = np.clip(carbon_stock, 0.0, 100.0)  # Clip to realistic range
-    fauna_abundance = rng.uniform(0.0, 1.0, size=n_agents)  # Fauna abundance index
+    # Generate initial_adopt with correlations to behavioural drivers but target 5% share
+    latent_adopt = (
+        0.5 * environmental_value
+        + 0.5 * self_belief
+        + 0.3 * capability
+        + 0.3 * opportunity
+    )
+    target_share = 0.05
+    bias = 0.0
+    for _ in range(25):
+        adopt_prob = 1.0 / (1.0 + np.exp(-(latent_adopt + bias)))
+        current_share = adopt_prob.mean()
+        grad = np.mean(adopt_prob * (1.0 - adopt_prob))
+        if abs(current_share - target_share) < 1e-4 or grad < 1e-6:
+            break
+        bias += (target_share - current_share) / grad
+    adopt_prob = 1.0 / (1.0 + np.exp(-(latent_adopt + bias)))
+    adopt_prob = np.clip(adopt_prob, 0.0, 1.0)
+    n_initial = max(1, int(round(target_share * n_agents)))
+    initial_adopt = np.zeros(n_agents, dtype=int)
+    if n_initial >= n_agents:
+        initial_adopt[:] = 1
+    else:
+        top_indices = np.argpartition(adopt_prob, -n_initial)[-n_initial:]
+        initial_adopt[top_indices] = 1
+
+    # Adjust profit_weights and social_weights based on expected_profit_diff
+    profit_weights += 0.3 * (expected_profit_diff - expected_profit_diff.mean()) / expected_profit_diff.std()
+    profit_weights = np.clip(profit_weights, 0.5, 2.0)
+    social_weights -= 0.1 * (expected_profit_diff - expected_profit_diff.mean()) / expected_profit_diff.std()
+    social_weights = np.clip(social_weights, 0.5, 2.0)
 
     # Create DataFrame
     df = pd.DataFrame(
@@ -61,7 +107,7 @@ def generate_profit_data(
             "agent_id": range(n_agents),
             "profit_conventional_eur_per_ha": profit_conventional,
             "profit_nature_based_eur_per_ha": profit_nature_based,
-            "environmental_value": personal_values,
+            "environmental_value": environmental_value,
             "social_weights": social_weights,
             "profit_weights": profit_weights,
             "stay_probs": stay_probs,

@@ -8,40 +8,11 @@ et al. (2024) (https://doi.org/10.5194/bg-21-4099-2024).
 """
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict
 
 import numpy as np
 import pandas as pd
 import xarray as xr
-
-
-@dataclass
-class LandPatch:
-    """Minimal land representation linked to a single farmer."""
-
-    id: int
-    area_ha: float
-    carbon_stock: float
-    fauna_abundance: float
-
-
-@dataclass
-class Farmer:
-    """Container for farmer-level attributes and their associated land patch."""
-
-    id: int
-    land_patch: LandPatch
-    expected_profit_conv: float
-    expected_profit_nat: float
-    expected_profit_diff: float
-    profit_weights: float
-    social_weights: float
-    environmental_value: float
-    self_belief: float
-    capability: float
-    opportunity: float
-    adopt: int
-    stay_prob: float
 
 
 def _norm01(arr) -> xr.DataArray:
@@ -231,9 +202,6 @@ class PeatlandABM:
       opportunity, and inertia govern actual behaviour.
     """
 
-    conventional_carbon_stock = 50.0  # tC/ha for conventional practices
-    nature_based_carbon_stock = 60.0  # tC/ha for nature-based practices
-
     def __init__(
         self,
         n_agents: int = 500,
@@ -259,21 +227,6 @@ class PeatlandABM:
         df = pd.read_csv(profits_csv)
         if len(df) < self.n:
             raise ValueError(f"CSV file must have at least {self.n} rows for agent profits.")
-
-        agent_ids = df["agent_id"].values[: self.n] if "agent_id" in df else np.arange(self.n)
-        area_values = df["area_ha"].values[: self.n] if "area_ha" in df else np.ones(self.n)
-        carbon_values = df["carbon_stock"].values[: self.n] if "carbon_stock" in df else np.zeros(self.n)
-        fauna_values = df["fauna_abundance"].values[: self.n] if "fauna_abundance" in df else np.zeros(self.n)
-
-        self.land_patches: List[LandPatch] = [
-            LandPatch(
-                id=int(agent_ids[idx]),
-                area_ha=float(area_values[idx]),
-                carbon_stock=float(carbon_values[idx]),
-                fauna_abundance=float(fauna_values[idx]),
-            )
-            for idx in range(self.n)
-        ]
 
         expected_profit_conv = xr.DataArray(
             df["profit_conventional_eur_per_ha"].values[: self.n], dims=["agent"]
@@ -345,25 +298,6 @@ class PeatlandABM:
         # Preserve legacy attributes used elsewhere in the code base
         self.expected_profit_diff_eur_per_ha = self.state.expected_profit_diff
 
-        self.farmers: List[Farmer] = [
-            Farmer(
-                id=int(agent_ids[idx]),
-                land_patch=self.land_patches[idx],
-                expected_profit_conv=float(self.state.expected_profit_conv.values[idx]),
-                expected_profit_nat=float(self.state.expected_profit_nat.values[idx]),
-                expected_profit_diff=float(self.state.expected_profit_diff.values[idx]),
-                profit_weights=float(self.state.profit_weights.values[idx]),
-                social_weights=float(self.state.social_weights.values[idx]),
-                environmental_value=float(self.state.environmental_value.values[idx]),
-                self_belief=float(self.state.self_belief.values[idx]),
-                capability=float(self.state.capability.values[idx]),
-                opportunity=float(self.state.opportunity.values[idx]),
-                adopt=int(self.state.adopt.values[idx]),
-                stay_prob=float(self.state.stay_probs.values[idx]),
-            )
-            for idx in range(self.n)
-        ]
-
     def step(self) -> Dict[str, object]:
         """Advance the simulation by one period and return diagnostics."""
 
@@ -399,34 +333,18 @@ class PeatlandABM:
                 )
                 self.state.profit_weights.values[idx] = np.clip(self.state.profit_weights.values[idx], 0.5, 2.0)
 
-        for idx, farmer in enumerate(self.farmers):
-            farmer.adopt = int(self.state.adopt.values[idx])
-            farmer.profit_weights = float(self.state.profit_weights.values[idx])
-            farmer.social_weights = float(self.state.social_weights.values[idx])
-            # Update carbon stock based on adoption
-            farmer.land_patch.carbon_stock = (
-                self.nature_based_carbon_stock if farmer.adopt else self.conventional_carbon_stock
-            )
-
         conventional_emissions = 3.77
         nature_based_emissions = 2.66
-        emis_per_ha = np.array([
-            nature_based_emissions if farmer.adopt else conventional_emissions
-            for farmer in self.farmers
-        ])
-        total_emis = emis_per_ha * np.array([farmer.land_patch.area_ha for farmer in self.farmers])
-        total_area = sum(farmer.land_patch.area_ha for farmer in self.farmers)
-        avg_emiss = total_emis.sum() / total_area if total_area > 0 else 0.0
+        emis = conventional_emissions * (1 - self.state.adopt.values) + nature_based_emissions * self.state.adopt.values
 
-        baseline_per_ha = conventional_emissions
-        baseline_total = baseline_per_ha * total_area
+        baseline = conventional_emissions
         adoption_rate = float(np.mean(self.state.adopt.values))
-        emissions_reduced = max(baseline_total - total_emis.sum(), 0.0)
+        avg_emiss = float(np.mean(emis))
+        emissions_reduced = max(baseline - avg_emiss, 0.0)
         policy_cost_per_ha = self.subsidy_eur_per_ha * adoption_rate
-        policy_cost_total = self.subsidy_eur_per_ha * sum(farmer.land_patch.area_ha * farmer.adopt for farmer in self.farmers)
         threshold = 0.01
         if emissions_reduced > threshold:
-            cost_per_tonne = policy_cost_total / emissions_reduced
+            cost_per_tonne = policy_cost_per_ha / emissions_reduced
         else:
             cost_per_tonne = float("nan")
 
@@ -439,7 +357,7 @@ class PeatlandABM:
             "avg_emissions_tCO2_ha": avg_emiss,
             "subsidy_eur_per_ha": self.subsidy_eur_per_ha,
             "expected_profit_diff_eur_per_ha": self.state.expected_profit_diff.copy(),
-            "emissions_saved_tCO2_ha": emissions_reduced / total_area if total_area > 0 else 0.0,
+            "emissions_saved_tCO2_ha": emissions_reduced,
             "policy_cost_eur_per_ha": policy_cost_per_ha,
             "cost_per_tonne_eur_per_tCO2": cost_per_tonne,
             "mean_utility": mean_utility,

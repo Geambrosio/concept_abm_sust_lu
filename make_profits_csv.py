@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 
 def generate_profit_data(
-    n_agents=500,
+    n_agents=100,
     mean_conv=1500,
     std_conv=200,
     mean_nat=1450,
@@ -58,7 +58,7 @@ def generate_profit_data(
     # Create DataFrame
     df = pd.DataFrame(
         {
-            "agent_id": range(n_agents),
+            "farmer_id": range(n_agents),
             "profit_conventional_eur_per_ha": profit_conventional,
             "profit_nature_based_eur_per_ha": profit_nature_based,
             "environmental_value": personal_values,
@@ -89,5 +89,54 @@ def generate_profit_data(
     print(f"Mean Fauna Abundance: {df['fauna_abundance'].mean():.2f}")
 
 
+def generate_consumer_data(
+    n_consumers=1000,
+    health_mean=0.2,
+    health_std=0.35,
+    price_mean=0.4,
+    price_std=0.25,
+    eco_mean=0.3,
+    eco_std=0.35,
+    eco_weight_mean=1.0,
+    eco_weight_std=0.3,
+    seed=84,
+    filename="consumers.csv",
+):
+    """Generate a CSV with consumer preferences aligned with the Consumer dataclass."""
+
+    rng = np.random.default_rng(seed)
+    health_pref = np.clip(rng.normal(health_mean, health_std, size=n_consumers), -1.0, 1.0)
+    price_sensitivity = np.clip(rng.normal(price_mean, price_std, size=n_consumers), 0.0, 2.0)
+    eco_pref = np.clip(rng.normal(eco_mean, eco_std, size=n_consumers), -1.0, 1.0)
+    eco_weight = np.clip(rng.normal(eco_weight_mean, eco_weight_std, size=n_consumers), 0.2, 2.0)
+    current_choice = np.full(n_consumers, "conventional", dtype=object)
+    rewetted_count = max(1, int(round(0.05 * n_consumers)))
+    rewetted_indices = rng.choice(n_consumers, size=rewetted_count, replace=False)
+    current_choice[rewetted_indices] = "rewetted"
+
+    df = pd.DataFrame(
+        {
+            "household_id": range(n_consumers),
+            "health_pref": health_pref,
+            "price_sensitivity": price_sensitivity,
+            "eco_pref": eco_pref,
+            "eco_weight": eco_weight,
+            "current_choice": current_choice,
+        }
+    )
+
+    df.to_csv(filename, index=False)
+    print(f"Successfully generated '{filename}' with {n_consumers} consumers.")
+    print("\nConsumer data preview:")
+    print(df.head())
+    print(f"\nMean Health Preference: {df['health_pref'].mean():.2f}")
+    print(f"Mean Price Sensitivity: {df['price_sensitivity'].mean():.2f}")
+    print(f"Mean Eco Preference: {df['eco_pref'].mean():.2f}")
+    print(f"Mean Eco Weight: {df['eco_weight'].mean():.2f}")
+    rewetted_share = (df['current_choice'] == 'rewetted').mean()
+    print(f"Initial Rewetted Share: {rewetted_share:.2%}")
+
+
 if __name__ == "__main__":
-    generate_profit_data(n_agents=500)
+    generate_profit_data(n_agents=100)
+    generate_consumer_data(n_consumers=1000)

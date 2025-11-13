@@ -7,6 +7,26 @@ from datetime import datetime
 
 from model import PeatlandABM, run_simulation, monte_carlo_runs
 
+PROFITS_CSV_DEFAULT = "profits_agents.csv"
+CONSUMERS_CSV_DEFAULT = "consumers.csv"
+
+try:
+    _profits_df = pd.read_csv(PROFITS_CSV_DEFAULT)
+    _farmer_count = max(1, int(len(_profits_df)))
+except FileNotFoundError:
+    _profits_df = None
+    _farmer_count = 100
+
+try:
+    _consumers_df = pd.read_csv(CONSUMERS_CSV_DEFAULT)
+    _consumer_count = int(len(_consumers_df))
+except FileNotFoundError:
+    _consumers_df = None
+    _consumer_count = 0
+
+RISK_AVERSION_FIXED = 1.2
+INTENTION_INTERCEPT_FIXED = 0.0
+
 
 st.set_page_config(page_title='Peatland ABM', layout='wide')
 
@@ -22,10 +42,12 @@ if "simulation_complete" not in st.session_state:
 with st.sidebar:
     st.markdown('---')
     st.subheader('Simulation Setup')
-    n_agents = st.slider('Number of farmers', 50, 1000, 500, 50)
-    steps = st.slider('Simulation steps', 10, 200, 50, 10, help='Number of periods to simulate.')
+    st.caption(f"Farmers in dataset: {_farmer_count}")
+    if _consumer_count:
+        st.caption(f"Consumers in dataset: {_consumer_count}")
+    steps = st.slider('Simulation steps', 10, 30, 20, 1, help='Number of periods to simulate.')
     n_runs = st.number_input(
-        'Monte Carlo runs', min_value=1, max_value=500, value=1, step=1,
+        'Monte Carlo runs', min_value=1, max_value=500, value=5, step=1,
         help='How many seeds to evaluate for the Monte Carlo ensemble.'
     )
     seed_base = st.number_input(
@@ -43,29 +65,32 @@ with st.sidebar:
         'Subsidy S (EUR/ha/year)', 0.0, 500.0, 100.0, 10.0,
         help='Annual subsidy paid to adopters.'
     )
-    hetero_persistence = st.checkbox(
-        'Heterogeneous adopter persistence', value=True,
-        help='If selected, each adopter draws their own stay probability in [0.7, 0.99].'
+    st.caption('Adopter persistence: heterogeneous (fixed)')
+
+    st.markdown('---')
+    st.subheader('Consumer Behaviour')
+    base_eco_weight = float(_consumers_df['eco_weight'].mean()) if _consumers_df is not None and 'eco_weight' in _consumers_df else 1.0
+    st.caption(f"Baseline eco weight (dataset mean): {base_eco_weight:.2f}")
+    consumer_eco_weight_scale = st.slider(
+        'Eco-weight multiplier', 0.0, 2.5, 1.0, 0.05,
+        help='Scales consumer emphasis on environmental preferences when choosing products.'
     )
-    stay_adopter_prob = st.slider(
-        'Stay-adopter probability (if homogeneous)', 0.5, 0.99, 0.90, 0.01,
-        help='Used only when heterogeneity is disabled.'
-    )
+    st.caption('Demand feedback fixed: strength 12 €/ha, curvature 2.0, update rate 0.05; customise in code if needed.')
 
     st.markdown('---')
     st.subheader('Stage A - Intention Formation')
     st.latex(r"I_i = w_{econ} \tilde{U}_{econ,i} + w_{soc} \tilde{U}_{soc,i} + w_{pers} V_i + w_{self} B_i + b")
     st.latex(r"p^{intent}_i = \sigma\!\left(T \cdot I_i\right)")
-    risk_aversion_factor = st.slider(
-        'Loss aversion lambda', 0.5, 3.0, 1.2, 0.1,
-        help='Prospect theory loss aversion parameter (Rommel et al., 2022).'
-    )
+    risk_aversion_factor = RISK_AVERSION_FIXED
+    st.caption(f"Loss aversion λ (fixed): {risk_aversion_factor:.2f}")
     weight_econ = st.slider('Weight: economic (w_econ)', 0.0, 3.0, 1.0, 0.1)
-    weight_social = st.slider('Weight: social (w_soc)', 0.0, 3.0, 1.0, 0.1)
+    weight_social = st.slider('Weight: social (w_soc)', 0.0, 3.0, 0.6, 0.1)
     weight_personal = st.slider('Weight: personal values (w_pers)', 0.0, 3.0, 0.6, 0.1)
     weight_self = st.slider('Weight: self-belief (w_self)', 0.0, 3.0, 0.6, 0.1)
-    intention_intercept = st.slider('Intercept b', -2.0, 2.0, 0.0, 0.1)
-    intention_temperature = st.slider('Sigmoid temperature T', 0.1, 5.0, 1.0, 0.1)
+    intention_intercept = INTENTION_INTERCEPT_FIXED
+    st.caption(f"Intercept b (fixed): {intention_intercept:.1f}")
+    intention_temperature = 1.0
+    st.caption('Sigmoid temperature T fixed at 1.0; customise in code if needed.')
 
     st.markdown('---')
     st.subheader('Learning Dynamics')
@@ -75,7 +100,21 @@ with st.sidebar:
     st.markdown('---')
     st.subheader('Stage B - Adoption Friction')
     st.latex(r"p^{adopt}_i = p^{intent}_i \cdot C_i \cdot O_i")
-    st.write("Capability and opportunity are now loaded from the CSV file.")
+    st.write(
+        "Capability and opportunity are loaded from the CSV; use the multipliers below to stress test adoption frictions."
+    )
+    capability_scale = st.slider(
+        'Capability scale factor', 0.0, 2.0, 1.0, 0.05,
+        help='Global multiplier applied to capability scores before adoption (clipped to [0, 1]).'
+    )
+    opportunity_scale = st.slider(
+        'Opportunity scale factor', 0.0, 2.0, 1.0, 0.05,
+        help='Global multiplier applied to opportunity scores before adoption (clipped to [0, 1]).'
+    )
+
+    st.markdown('---')
+    st.subheader('Subsidy Split')
+    st.caption('Subsidy split fixed: α = 0.2 to intention, β = 0.1 for feasibility boosts. Reference scale fixed at 200 €/ha.')
 
 st.markdown('---')
 run_clicked = st.button('Run simulation')
@@ -91,16 +130,20 @@ if run_clicked:
     }
 
     model_params = dict(
-        n_agents=int(n_agents),
+        n_agents=int(_farmer_count),
         subsidy_eur_per_ha=float(subsidy_eur_per_ha),
         risk_aversion_factor=float(risk_aversion_factor),
-        hetero_persistence=bool(hetero_persistence),
-        stay_adopter_prob=float(stay_adopter_prob),
+        hetero_persistence=True,
         intention_weights=weights,
         intention_intercept=float(intention_intercept),
         intention_steepness=float(intention_temperature),
         social_learning_rate=float(social_learning_rate),
         econ_learning_rate=float(econ_learning_rate),
+        profits_csv=PROFITS_CSV_DEFAULT,
+        consumers_csv=CONSUMERS_CSV_DEFAULT,
+        consumer_eco_weight_scale=float(consumer_eco_weight_scale),
+        capability_scale=float(capability_scale),
+        opportunity_scale=float(opportunity_scale),
     )
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -123,6 +166,16 @@ if run_clicked:
         'avg_emissions_tCO2_ha',
         'policy_cost_eur_per_ha',
         'cost_per_tonne_eur_per_tCO2',
+        'consumer_rewetted_share',
+    'consumer_rewetted_share_raw',
+    'consumer_demand_bias',
+        'consumer_profit_bonus_nat',
+        'consumer_profit_bonus_conv',
+        'opportunity_adjusted_mean',
+        'subsidy_stageA_eur_per_ha',
+        'subsidy_stageB_eur_per_ha',
+        'subsidy_alpha',
+        'subsidy_feasibility_beta',
     ]
     stacked = {m: np.stack([ds[m].values for ds in results_list]) for m in metrics}
     steps_arr = results_list[0].coords['step'].values
@@ -139,11 +192,9 @@ if run_clicked:
         df_mc[key] = values
     df_mc.to_csv(output_dir / 'monte_carlo_stats.csv', index=False)
 
-    mean_utility_arr = np.stack([ds['mean_utility'].values for ds in results_list])
     mean_econ_arr = np.stack([ds['mean_econ_utility'].values for ds in results_list])
     mean_social_arr = np.stack([ds['mean_social_utility'].values for ds in results_list])
     utility_summary = {
-        'overall': (np.mean(mean_utility_arr, axis=0), np.std(mean_utility_arr, axis=0)),
         'economic': (np.mean(mean_econ_arr, axis=0), np.std(mean_econ_arr, axis=0)),
         'social': (np.mean(mean_social_arr, axis=0), np.std(mean_social_arr, axis=0)),
     }
@@ -155,6 +206,57 @@ if run_clicked:
         f'Mean intention rate ends at {final_intention_mean:.1%}, giving an intention-adoption gap of '
         f'{(final_intention_mean - final_adoption_mean):+.1%}.'
     )
+
+    final_consumer_share = agg['consumer_rewetted_share_mean'][-1]
+    final_consumer_share_raw = agg['consumer_rewetted_share_raw_mean'][-1]
+    final_nat_bonus = agg['consumer_profit_bonus_nat_mean'][-1]
+    final_conv_bonus = agg['consumer_profit_bonus_conv_mean'][-1]
+    final_stage_a = agg['subsidy_stageA_eur_per_ha_mean'][-1]
+    final_stage_b = agg['subsidy_stageB_eur_per_ha_mean'][-1]
+    final_alpha_mean = agg['subsidy_alpha_mean'][-1]
+    final_beta_mean = agg['subsidy_feasibility_beta_mean'][-1]
+
+    st.subheader('Consumer feedback')
+    st.caption('Aggregated over Monte Carlo ensemble (mean ± std).')
+    col_c1, col_c2, col_c3 = st.columns(3)
+    col_c1.metric(
+        'Rewetted demand share (smoothed, final step)',
+        f'{final_consumer_share:.1%}',
+        delta=f"vs raw {final_consumer_share - final_consumer_share_raw:+.1%}",
+        help='Share of consumers buying rewetted products after smoothing.'
+    )
+    col_c1.caption(
+        f"Raw: {final_consumer_share_raw:.1%} ± {agg['consumer_rewetted_share_raw_std'][-1]:.1%}; "
+        f"Smoothed std: {agg['consumer_rewetted_share_std'][-1]:.1%}"
+    )
+    col_c2.metric(
+        'Profit bonus to rewetted (€/ha)',
+        f'{final_nat_bonus:.2f}',
+        help='Positive values increase expected profits for rewetted farmers next period.'
+    )
+    col_c2.caption(f"Std: {agg['consumer_profit_bonus_nat_std'][-1]:.2f}")
+    col_c3.metric(
+        'Profit bonus to conventional (€/ha)',
+        f'{final_conv_bonus:.2f}',
+        help='Positive values favour conventional farmers when demand shifts back.'
+    )
+    col_c3.caption(f"Std: {agg['consumer_profit_bonus_conv_std'][-1]:.2f}")
+
+    st.subheader('Subsidy split effects')
+    st.caption('α governs motivation; β scales feasibility boosts.')
+    col_s1, col_s2 = st.columns(2)
+    col_s1.metric(
+        'Stage A share (α · S)',
+        f'{final_stage_a:.1f} €/ha',
+        help='Certain subsidy share used in the intention stage.'
+    )
+    col_s1.caption(f"α mean: {final_alpha_mean:.2f}")
+    col_s2.metric(
+        'Stage B share ((1−α) · S)',
+        f'{final_stage_b:.1f} €/ha',
+        help='Remaining subsidy easing adoption feasibility.'
+    )
+    col_s2.caption(f"β mean: {final_beta_mean:.2f}")
 
     first_ds = results_list[0]
     adoption_series = first_ds['adoption_rate'].values
@@ -214,12 +316,9 @@ if run_clicked:
     fig_emis.savefig(output_dir / 'emissions_plot.png')
 
     st.subheader('Utility decomposition')
-    util_mean, util_std = utility_summary['overall']
     econ_mean, econ_std = utility_summary['economic']
     social_mean, social_std = utility_summary['social']
     fig_util, ax_util = plt.subplots()
-    ax_util.plot(steps_arr, util_mean, label='Overall utility', color='tab:blue')
-    ax_util.fill_between(steps_arr, util_mean - util_std, util_mean + util_std, color='tab:blue', alpha=0.2)
     ax_util.plot(steps_arr, econ_mean, label='Economic utility', color='tab:green')
     ax_util.fill_between(steps_arr, econ_mean - econ_std, econ_mean + econ_std, color='tab:green', alpha=0.2)
     ax_util.plot(steps_arr, social_mean, label='Social utility', color='tab:orange')

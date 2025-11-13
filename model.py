@@ -44,10 +44,29 @@ class Farmer:
     stay_prob: float
 
 
+@dataclass
+class Consumer:
+    """Minimal household representation for downstream market interactions."""
+
+    household_id: int
+    health_pref: float
+    price_sensitivity: float
+    eco_pref: float
+    eco_weight: float
+    current_choice: str
+
+    def decide(self, eco_weight_scale: float = 1.0) -> str:
+        """Choose product by weighing health and eco gains against price pressure."""
+
+        effective_eco_weight = self.eco_weight * eco_weight_scale
+        score = self.health_pref + effective_eco_weight * self.eco_pref - self.price_sensitivity
+        self.current_choice = "rewetted" if score >= 0.0 else "conventional"
+        return self.current_choice
+
+
 def _norm01(arr) -> xr.DataArray:
-    """Return a 0-1 normalized copy of ``arr`` while preserving coordinates.
-    Used to normalize the values of economic utility (econ), social utility (social),
-    capability, and opportunity so that these components are scaled to the [0, 1]"""
+    """Return a 0-1 normalized copy of ``arr`` while preserving coordinates."""
+
     data = np.asarray(arr, dtype=float)
     span = data.max() - data.min()
     if span < 1e-8:
@@ -56,26 +75,18 @@ def _norm01(arr) -> xr.DataArray:
         normalized = (data - data.min()) / span
     if isinstance(arr, xr.DataArray):
         return xr.DataArray(normalized, dims=arr.dims, coords=arr.coords)
-    else:
-        return xr.DataArray(normalized, dims=["agent"])
+    return xr.DataArray(normalized, dims=["agent"])
 
 
 def _sigmoid_scalar(value: float, steepness: float) -> float:
-    """Scaled sigmoid used to map latent intention scores to probabilities.
-    If steepness  = 1.0, the sigmoid is standard.
-    If steepness  = 0.5, agents with slightly positive intention are much more likely to adopt.
-    If steepness  = 2.0, even agents with high intention only slowly approach probability 1."""
+    """Scaled sigmoid used to map latent intention scores to probabilities."""
+
     return 1.0 / (1.0 + np.exp(-steepness * value))
 
 
 @dataclass
 class AgentState:
-    """Container for agent-level attributes kept as :class:`xarray.DataArray`.
-
-    Keeping these grouped improves readability and makes it clear which inputs
-    feed the behavioural model (values, beliefs, capability) versus economic
-    parameters (profits, peer weights).
-    """
+    """Container for agent-level attributes kept as :class:`xarray.DataArray`."""
 
     expected_profit_conv: xr.DataArray
     expected_profit_nat: xr.DataArray
@@ -87,15 +98,13 @@ class AgentState:
     capability: xr.DataArray
     opportunity: xr.DataArray
     adopt: xr.DataArray
+    adoption_lock: xr.DataArray
     stay_probs: xr.DataArray
 
 
 @dataclass
 class IntentionConfig:
-    """Configuration for the intention formation engine.
-
-    These parameters determine how behavioural components are combined into the
-    latent intention score derived from the choice experiment evidence."""
+    """Configuration for the intention formation engine."""
 
     weights: Dict[str, float]
     intercept: float
@@ -116,21 +125,6 @@ class IntentionBundle:
     intention_prob: xr.DataArray
     expected_profit_change: xr.DataArray
 
-    def as_dict(self) -> Dict[str, xr.DataArray]:
-        """Return a plain dictionary for backwards-compatible access."""
-
-        return {
-            "econ": self.econ,
-            "social": self.social,
-            "personal": self.personal,
-            "selfeff": self.selfeff,
-            "econ_n": self.econ_norm,
-            "social_n": self.social_norm,
-            "latent": self.latent,
-            "intention_prob": self.intention_prob,
-            "expected_profit_change": self.expected_profit_change,
-        }
-
 
 class IntentionEngine:
     """Stage A: compute intention probabilities from behavioural components.
@@ -144,10 +138,10 @@ class IntentionEngine:
         self._prospect_fn = prospect_fn
         self._config = config
 
-    def compute(self, state: AgentState, peer_share: float, subsidy: float) -> IntentionBundle:
+    def compute(self, state: AgentState, peer_share: float) -> IntentionBundle:
         """Return intention components for all agents given the current context."""
 
-        expected_profit_change = subsidy - state.expected_profit_diff
+        expected_profit_change = -state.expected_profit_diff
         prospect_values = xr.apply_ufunc(
             lambda val: self._prospect_fn(float(val)),
             expected_profit_change,
@@ -196,12 +190,32 @@ def apply_adoption(
     current_adopt: xr.DataArray,
     stay_probs: xr.DataArray,
     rng: np.random.Generator,
+    opportunity_bonus: float = 0.0,
+    adoption_lock: xr.DataArray | None = None,
+    adoption_lock_years: int = 10,
+    capability_scale: float = 1.0,
+    opportunity_scale: float = 1.0,
 ) -> Dict[str, xr.DataArray]:
     """Stage B: translate intention into adoption with friction."""
 
     capability_norm = _norm01(capability)
+    capability_norm = xr.DataArray(
+        np.clip(capability_norm.values * capability_scale, 0.0, 1.0),
+        dims=capability_norm.dims,
+        coords=capability_norm.coords,
+    )
     opportunity_norm = _norm01(opportunity)
-    adoption_prob = intention_prob * capability_norm * opportunity_norm
+    opportunity_norm = xr.DataArray(
+        np.clip(opportunity_norm.values * opportunity_scale, 0.0, 1.0),
+        dims=opportunity_norm.dims,
+        coords=opportunity_norm.coords,
+    )
+    opportunity_adjusted = xr.DataArray(
+        np.clip(opportunity_norm.values + opportunity_bonus, 0.0, 1.0),
+        dims=opportunity_norm.dims,
+        coords=opportunity_norm.coords,
+    )
+    adoption_prob = intention_prob * capability_norm * opportunity_adjusted
     adoption_prob = xr.DataArray(
         np.clip(adoption_prob.values, 0.0, 1.0),
         dims=adoption_prob.dims,
@@ -210,13 +224,40 @@ def apply_adoption(
 
     draws = rng.binomial(1, adoption_prob.values)
     updated = current_adopt.copy()
+    if adoption_lock is None:
+        adoption_lock = xr.zeros_like(current_adopt)
+    updated_lock = adoption_lock.copy()
+    lock_years = max(1, int(adoption_lock_years))
     for idx in range(updated.sizes["agent"]):
-        if current_adopt.values[idx] == 1 and rng.random() < stay_probs.values[idx]:
-            updated.values[idx] = 1
-        else:
-            updated.values[idx] = draws[idx]
+        lock_remaining = float(adoption_lock.values[idx])
+        if current_adopt.values[idx] == 1:
+            if lock_remaining > 0:
+                updated.values[idx] = 1
+                updated_lock.values[idx] = max(lock_remaining - 1, 0)
+                continue
 
-    return {"adoption_prob": adoption_prob, "updated_adopt": updated}
+            if rng.random() < stay_probs.values[idx]:
+                updated.values[idx] = 1
+                updated_lock.values[idx] = 0
+                continue
+
+            updated.values[idx] = draws[idx]
+            updated_lock.values[idx] = 0
+            continue
+
+        if draws[idx] == 1:
+            updated.values[idx] = 1
+            updated_lock.values[idx] = max(lock_years - 1, 0)
+        else:
+            updated.values[idx] = 0
+            updated_lock.values[idx] = 0
+
+    return {
+        "adoption_prob": adoption_prob,
+        "updated_adopt": updated,
+        "opportunity_norm": opportunity_adjusted,
+        "adoption_lock": updated_lock,
+    }
 
 
 class PeatlandABM:
@@ -236,12 +277,13 @@ class PeatlandABM:
 
     def __init__(
         self,
-        n_agents: int = 500,
+        n_agents: int = 100,
         subsidy_eur_per_ha: float = 100.0,
         seed: int = 42,
         stay_adopter_prob: float = 0.9,
         hetero_persistence: bool = True,
         profits_csv: str = "profits_agents.csv",
+        consumers_csv: str = "consumers.csv",
         risk_aversion_factor: float = 1.2,
         environmental_value=None,
         social_weights=None,
@@ -250,17 +292,43 @@ class PeatlandABM:
         intention_steepness : float = 1.0,
         social_learning_rate: float = 0.1,
         econ_learning_rate: float = 0.1,
+        consumer_demand_strength: float = 12.0,
+        consumer_eco_weight_scale: float = 1.0,
+        consumer_demand_curvature: float = 2.0,
+        subsidy_alpha: float = 0.2,
+        subsidy_feasibility_beta: float = 0.1,
+        subsidy_ref_eur_per_ha: float = 200.0,
+        consumer_share_update_rate: float = 0.05,
+        adoption_lock_years: int = 10,
+        capability_scale: float = 1.0,
+        opportunity_scale: float = 1.0,
     ) -> None:
         self.n = n_agents
         self.subsidy_eur_per_ha = subsidy_eur_per_ha
         self.risk_aversion_factor = risk_aversion_factor
         self.rng = np.random.default_rng(seed)
+        self.consumer_demand_strength = float(consumer_demand_strength)
+        self.consumer_eco_weight_scale = float(consumer_eco_weight_scale)
+        self.consumer_demand_curvature = max(0.0, float(consumer_demand_curvature))
+        self.subsidy_alpha = float(np.clip(subsidy_alpha, 0.0, 1.0))
+        self.subsidy_feasibility_beta = max(0.0, float(subsidy_feasibility_beta))
+        self.subsidy_ref_eur_per_ha = max(1e-6, float(subsidy_ref_eur_per_ha))
+        self.consumer_share_update_rate = float(np.clip(consumer_share_update_rate, 0.0, 1.0))
+        self.capability_scale = float(max(0.0, capability_scale))
+        self.opportunity_scale = float(max(0.0, opportunity_scale))
+        self.adoption_lock_years = max(1, int(adoption_lock_years))
 
         df = pd.read_csv(profits_csv)
         if len(df) < self.n:
-            raise ValueError(f"CSV file must have at least {self.n} rows for agent profits.")
+            raise ValueError(
+                f"CSV file '{profits_csv}' must have at least {self.n} rows for farmer profits."
+            )
 
-        agent_ids = df["agent_id"].values[: self.n] if "agent_id" in df else np.arange(self.n)
+        agent_ids = (
+            df["farmer_id"].values[: self.n]
+            if "farmer_id" in df
+            else (df["agent_id"].values[: self.n] if "agent_id" in df else np.arange(self.n))
+        )
         area_values = df["area_ha"].values[: self.n] if "area_ha" in df else np.ones(self.n)
         carbon_values = df["carbon_stock"].values[: self.n] if "carbon_stock" in df else np.zeros(self.n)
         fauna_values = df["fauna_abundance"].values[: self.n] if "fauna_abundance" in df else np.zeros(self.n)
@@ -310,6 +378,10 @@ class PeatlandABM:
         opportunity_da = xr.DataArray(np.clip(np.asarray(opportunity), 0.0, 1.0), dims=["agent"])
 
         adopt = xr.DataArray(df["initial_adopt"].values[: self.n], dims=["agent"])
+        adoption_lock = xr.DataArray(
+            np.where(adopt.values == 1, max(self.adoption_lock_years - 1, 0), 0),
+            dims=["agent"],
+        )
 
         self.state = AgentState(
             expected_profit_conv=expected_profit_conv,
@@ -322,8 +394,24 @@ class PeatlandABM:
             capability=capability_da,
             opportunity=opportunity_da,
             adopt=adopt,
+            adoption_lock=adoption_lock,
             stay_probs=stay_probs_da,
         )
+
+        self._base_expected_profit_conv = self.state.expected_profit_conv.copy()
+        self._base_expected_profit_nat = self.state.expected_profit_nat.copy()
+
+        self.consumer_rewetted_share = 0.0
+        self.consumer_rewetted_share_raw = 0.0
+        self.consumer_profit_bonus_nat = 0.0
+        self.consumer_profit_bonus_conv = 0.0
+        self.consumer_demand_bias = 0.0
+        self._consumer_rewetted_share_next = 0.0
+        self._consumer_rewetted_share_raw_next = 0.0
+        self._consumer_bonus_nat_current = 0.0
+        self._consumer_bonus_conv_current = 0.0
+        self._consumer_bonus_nat_next = 0.0
+        self._consumer_bonus_conv_next = 0.0
 
         default_weights = {"econ": 1.0, "social": 1.0, "personal": 0.6, "self": 0.6}
         if intention_weights is None:
@@ -364,11 +452,143 @@ class PeatlandABM:
             for idx in range(self.n)
         ]
 
+        self.consumers = self._load_consumers(consumers_csv)
+
+    def _load_consumers(self, consumers_csv: str | None) -> List[Consumer]:
+        """Load consumer preferences from CSV and return instantiated consumers."""
+
+        if consumers_csv is None:
+            raise ValueError("Consumer data must be provided via CSV; got None.")
+
+        try:
+            consumer_df = pd.read_csv(consumers_csv)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                f"Consumer CSV '{consumers_csv}' could not be found."
+            ) from exc
+
+        required_cols = {"household_id", "health_pref", "price_sensitivity", "eco_pref", "current_choice"}
+        missing = required_cols - set(consumer_df.columns)
+        if missing:
+            missing_cols = ", ".join(sorted(missing))
+            raise ValueError(
+                f"Consumer CSV '{consumers_csv}' is missing required columns: {missing_cols}"
+            )
+
+        has_eco_weight = "eco_weight" in consumer_df.columns
+
+        consumers: List[Consumer] = []
+        for _, row in consumer_df.iterrows():
+            choice = str(row["current_choice"]).strip().lower()
+            if choice not in {"conventional", "rewetted"}:
+                choice = "conventional"
+            eco_weight_value = float(row["eco_weight"]) if has_eco_weight else 1.0
+            if not np.isfinite(eco_weight_value):
+                eco_weight_value = 1.0
+            eco_weight_value = float(np.clip(eco_weight_value, 0.0, 5.0))
+            consumers.append(
+                Consumer(
+                    household_id=int(row["household_id"]),
+                    health_pref=float(row["health_pref"]),
+                    price_sensitivity=float(row["price_sensitivity"]),
+                    eco_pref=float(row["eco_pref"]),
+                    eco_weight=eco_weight_value,
+                    current_choice=choice,
+                )
+            )
+        return consumers
+
+    def apply_consumer_feedback(self, demand_strength: float) -> float:
+        """Adjust expected profits according to the aggregate consumer choice."""
+
+        self.state.expected_profit_conv = self._base_expected_profit_conv.copy()
+        self.state.expected_profit_nat = self._base_expected_profit_nat.copy()
+
+        if demand_strength <= 0.0 or not self.consumers:
+            self._consumer_bonus_nat_current = 0.0
+            self._consumer_bonus_conv_current = 0.0
+            self._consumer_bonus_nat_next = 0.0
+            self._consumer_bonus_conv_next = 0.0
+            self.consumer_rewetted_share = 0.0
+            self._consumer_rewetted_share_next = 0.0
+            self.consumer_rewetted_share_raw = 0.0
+            self._consumer_rewetted_share_raw_next = 0.0
+            self.consumer_profit_bonus_nat = 0.0
+            self.consumer_profit_bonus_conv = 0.0
+            self.consumer_demand_bias = 0.0
+            self.state.expected_profit_diff = self.state.expected_profit_conv - self.state.expected_profit_nat
+            self.expected_profit_diff_eur_per_ha = self.state.expected_profit_diff
+            return 0.0
+
+        if self._consumer_bonus_nat_current > 0.0:
+            self.state.expected_profit_nat = self.state.expected_profit_nat + self._consumer_bonus_nat_current
+        if self._consumer_bonus_conv_current > 0.0:
+            self.state.expected_profit_conv = self.state.expected_profit_conv + self._consumer_bonus_conv_current
+
+        self.state.expected_profit_diff = self.state.expected_profit_conv - self.state.expected_profit_nat
+        self.expected_profit_diff_eur_per_ha = self.state.expected_profit_diff
+        self.consumer_profit_bonus_nat = self._consumer_bonus_nat_current
+        self.consumer_profit_bonus_conv = self._consumer_bonus_conv_current
+
+        applied_share = self.consumer_rewetted_share
+
+        rewetted_votes = 0
+        for consumer in self.consumers:
+            choice = consumer.decide(self.consumer_eco_weight_scale)
+            if choice == "rewetted":
+                rewetted_votes += 1
+
+        rewetted_share_raw = rewetted_votes / len(self.consumers)
+        self.consumer_rewetted_share_raw = rewetted_share_raw
+
+        update_rate = self.consumer_share_update_rate
+        if update_rate <= 0.0:
+            rewetted_share_smoothed = rewetted_share_raw
+        else:
+            rewetted_share_smoothed = (
+                (1.0 - update_rate) * self.consumer_rewetted_share + update_rate * rewetted_share_raw
+            )
+        rewetted_share_smoothed = float(np.clip(rewetted_share_smoothed, 0.0, 1.0))
+
+        neutral_share = 0.5
+        delta_share = rewetted_share_smoothed - neutral_share
+        curvature = self.consumer_demand_curvature
+        if curvature <= 0.0:
+            rewetted_benefit = float(np.clip(rewetted_share_smoothed, 0.0, 1.0))
+        else:
+            rewetted_benefit = 1.0 / (1.0 + np.exp(-curvature * delta_share))
+
+        conv_benefit = 1.0 - rewetted_benefit
+        self.consumer_demand_bias = float(2.0 * rewetted_benefit - 1.0)
+        self._consumer_bonus_nat_next = demand_strength * rewetted_benefit
+        self._consumer_bonus_conv_next = demand_strength * conv_benefit
+        self._consumer_rewetted_share_next = rewetted_share_smoothed
+        self._consumer_rewetted_share_raw_next = rewetted_share_raw
+
+        return applied_share
+
     def step(self) -> Dict[str, object]:
         """Advance the simulation by one period and return diagnostics."""
 
+        consumer_share = self.apply_consumer_feedback(self.consumer_demand_strength)
         peer_share = float(self.state.adopt.mean())
-        bundle = self.engine.compute(self.state, peer_share, self.subsidy_eur_per_ha)
+        bundle = self.engine.compute(self.state, peer_share)
+
+        subsidy_stage_a = self.subsidy_alpha * self.subsidy_eur_per_ha
+        subsidy_stage_b = (1.0 - self.subsidy_alpha) * self.subsidy_eur_per_ha
+        subsidy_stage_a_norm = float(min(subsidy_stage_a / self.subsidy_ref_eur_per_ha, 1.0))
+        subsidy_stage_b_norm = float(min(subsidy_stage_b / self.subsidy_ref_eur_per_ha, 1.0))
+
+        latent_with_subsidy = bundle.latent + subsidy_stage_a_norm
+        intention_prob = xr.apply_ufunc(
+            lambda val: _sigmoid_scalar(val, self.intention_config.steepness),
+            latent_with_subsidy,
+            vectorize=True,
+        )
+        bundle.latent = latent_with_subsidy
+        bundle.intention_prob = intention_prob
+
+        opportunity_bonus = self.subsidy_feasibility_beta * subsidy_stage_b_norm
         adoption_out = apply_adoption(
             bundle.intention_prob,
             self.state.capability,
@@ -376,10 +596,15 @@ class PeatlandABM:
             self.state.adopt,
             self.state.stay_probs,
             self.rng,
+            opportunity_bonus=opportunity_bonus,
+            adoption_lock=self.state.adoption_lock,
+            adoption_lock_years=self.adoption_lock_years,
+            capability_scale=self.capability_scale,
+            opportunity_scale=self.opportunity_scale,
         )
         self.state.adopt = adoption_out["updated_adopt"]
+        self.state.adoption_lock = adoption_out["adoption_lock"]
 
-        mean_utility = float(bundle.latent.mean())
         mean_econ_utility = float(bundle.econ_norm.mean())
         mean_social_utility = float(bundle.social_norm.mean())
 
@@ -403,6 +628,9 @@ class PeatlandABM:
             farmer.adopt = int(self.state.adopt.values[idx])
             farmer.profit_weights = float(self.state.profit_weights.values[idx])
             farmer.social_weights = float(self.state.social_weights.values[idx])
+            farmer.expected_profit_conv = float(self.state.expected_profit_conv.values[idx])
+            farmer.expected_profit_nat = float(self.state.expected_profit_nat.values[idx])
+            farmer.expected_profit_diff = float(self.state.expected_profit_diff.values[idx])
             # Update carbon stock based on adoption
             farmer.land_patch.carbon_stock = (
                 self.nature_based_carbon_stock if farmer.adopt else self.conventional_carbon_stock
@@ -433,6 +661,8 @@ class PeatlandABM:
         intention_prob = bundle.intention_prob
         intention_rate = float(intention_prob.mean())
         adoption_prob = adoption_out["adoption_prob"]
+        opportunity_adjusted = adoption_out["opportunity_norm"]
+        opportunity_adjusted_mean = float(opportunity_adjusted.mean())
 
         result = {
             "adoption_rate": adoption_rate,
@@ -442,24 +672,43 @@ class PeatlandABM:
             "emissions_saved_tCO2_ha": emissions_reduced / total_area if total_area > 0 else 0.0,
             "policy_cost_eur_per_ha": policy_cost_per_ha,
             "cost_per_tonne_eur_per_tCO2": cost_per_tonne,
-            "mean_utility": mean_utility,
-            "utility_per_agent": bundle.latent.copy(),
             "mean_econ_utility": mean_econ_utility,
             "utility_econ_per_agent": bundle.econ_norm.copy(),
             "mean_social_utility": mean_social_utility,
             "utility_social_per_agent": bundle.social_norm.copy(),
-            "intention_prob": intention_prob.copy(),
             "intention_rate": intention_rate,
             "adoption_prob_per_agent": adoption_prob.copy(),
             "intention_prob_per_agent": intention_prob.copy(),
             "capability_per_agent": self.state.capability.copy(),
             "opportunity_per_agent": self.state.opportunity.copy(),
+            "opportunity_adjusted_per_agent": opportunity_adjusted.copy(),
             "environmental_value_per_agent": self.state.environmental_value.copy(),
             "social_weights_per_agent": self.state.social_weights.copy(),
             "self_belief_per_agent": self.state.self_belief.copy(),
+            "adoption_lock_remaining_per_agent": self.state.adoption_lock.copy(),
             "expected_profit_change_eur_per_ha": bundle.expected_profit_change.copy(),
-            "intention_components": bundle.as_dict(),
+            "consumer_rewetted_share": consumer_share,
+            "consumer_rewetted_share_raw": self.consumer_rewetted_share_raw,
+            "consumer_profit_bonus_nat": self.consumer_profit_bonus_nat,
+            "consumer_profit_bonus_conv": self.consumer_profit_bonus_conv,
+            "consumer_demand_bias": self.consumer_demand_bias,
+            "consumer_eco_weight_scale": self.consumer_eco_weight_scale,
+            "subsidy_stageA_eur_per_ha": subsidy_stage_a,
+            "subsidy_stageB_eur_per_ha": subsidy_stage_b,
+            "subsidy_stageA_norm": subsidy_stage_a_norm,
+            "subsidy_stageB_norm": subsidy_stage_b_norm,
+            "subsidy_alpha": self.subsidy_alpha,
+            "subsidy_feasibility_beta": self.subsidy_feasibility_beta,
+            "opportunity_bonus": opportunity_bonus,
+            "opportunity_adjusted_mean": opportunity_adjusted_mean,
+            "capability_scale": float(self.capability_scale),
+            "opportunity_scale": float(self.opportunity_scale),
         }
+
+        self._consumer_bonus_nat_current = self._consumer_bonus_nat_next
+        self._consumer_bonus_conv_current = self._consumer_bonus_conv_next
+        self.consumer_rewetted_share = self._consumer_rewetted_share_next
+        self.consumer_rewetted_share_raw = self._consumer_rewetted_share_raw_next
 
         return result
 
@@ -484,8 +733,6 @@ def run_simulation(model: PeatlandABM, steps: int = 50) -> xr.Dataset:
     emissions_saved_tCO2_ha = []
     policy_cost_eur_per_ha = []
     cost_per_tonne_eur_per_tCO2 = []
-    mean_utility = []
-    utility_per_agent = []
     mean_econ_utility = []
     utility_econ_per_agent = []
     mean_social_utility = []
@@ -498,7 +745,24 @@ def run_simulation(model: PeatlandABM, steps: int = 50) -> xr.Dataset:
     environmental_value_per_agent = []
     social_weights_per_agent = []
     self_belief_per_agent = []
+    adoption_lock_remaining_per_agent = []
     expected_profit_change_eur_per_ha = []
+    consumer_rewetted_share = []
+    consumer_rewetted_share_raw = []
+    consumer_demand_bias = []
+    consumer_profit_bonus_nat = []
+    consumer_profit_bonus_conv = []
+    opportunity_adjusted_per_agent = []
+    opportunity_adjusted_mean = []
+    subsidy_stageA_eur_per_ha = []
+    subsidy_stageB_eur_per_ha = []
+    subsidy_stageA_norm = []
+    subsidy_stageB_norm = []
+    opportunity_bonus = []
+    subsidy_alpha_series = []
+    subsidy_feasibility_beta_series = []
+    capability_scale_series = []
+    opportunity_scale_series = []
 
     for _ in range(steps):
         result = model.step()
@@ -508,8 +772,6 @@ def run_simulation(model: PeatlandABM, steps: int = 50) -> xr.Dataset:
         emissions_saved_tCO2_ha.append(result["emissions_saved_tCO2_ha"])
         policy_cost_eur_per_ha.append(result["policy_cost_eur_per_ha"])
         cost_per_tonne_eur_per_tCO2.append(result["cost_per_tonne_eur_per_tCO2"])
-        mean_utility.append(result["mean_utility"])
-        utility_per_agent.append(result["utility_per_agent"].values)
         mean_econ_utility.append(result["mean_econ_utility"])
         utility_econ_per_agent.append(result["utility_econ_per_agent"].values)
         mean_social_utility.append(result["mean_social_utility"])
@@ -522,7 +784,24 @@ def run_simulation(model: PeatlandABM, steps: int = 50) -> xr.Dataset:
         environmental_value_per_agent.append(result["environmental_value_per_agent"].values)
         social_weights_per_agent.append(result["social_weights_per_agent"].values)
         self_belief_per_agent.append(result["self_belief_per_agent"].values)
+        adoption_lock_remaining_per_agent.append(result["adoption_lock_remaining_per_agent"].values)
         expected_profit_change_eur_per_ha.append(result["expected_profit_change_eur_per_ha"].values)
+        consumer_rewetted_share.append(result["consumer_rewetted_share"])
+        consumer_rewetted_share_raw.append(result["consumer_rewetted_share_raw"])
+        consumer_demand_bias.append(result["consumer_demand_bias"])
+        consumer_profit_bonus_nat.append(result["consumer_profit_bonus_nat"])
+        consumer_profit_bonus_conv.append(result["consumer_profit_bonus_conv"])
+        opportunity_adjusted_per_agent.append(result["opportunity_adjusted_per_agent"].values)
+        opportunity_adjusted_mean.append(result["opportunity_adjusted_mean"])
+        subsidy_stageA_eur_per_ha.append(result["subsidy_stageA_eur_per_ha"])
+        subsidy_stageB_eur_per_ha.append(result["subsidy_stageB_eur_per_ha"])
+        subsidy_stageA_norm.append(result["subsidy_stageA_norm"])
+        subsidy_stageB_norm.append(result["subsidy_stageB_norm"])
+        opportunity_bonus.append(result["opportunity_bonus"])
+        subsidy_alpha_series.append(result["subsidy_alpha"])
+        subsidy_feasibility_beta_series.append(result["subsidy_feasibility_beta"])
+        capability_scale_series.append(result["capability_scale"])
+        opportunity_scale_series.append(result["opportunity_scale"])
 
     steps_arr = np.arange(1, steps + 1)
     agent_dim = np.arange(model.n)
@@ -536,8 +815,6 @@ def run_simulation(model: PeatlandABM, steps: int = 50) -> xr.Dataset:
             "emissions_saved_tCO2_ha": ("step", np.array(emissions_saved_tCO2_ha)),
             "policy_cost_eur_per_ha": ("step", np.array(policy_cost_eur_per_ha)),
             "cost_per_tonne_eur_per_tCO2": ("step", np.array(cost_per_tonne_eur_per_tCO2)),
-            "mean_utility": ("step", np.array(mean_utility)),
-            "utility_per_agent": (["step", "agent"], np.stack(utility_per_agent)),
             "mean_econ_utility": ("step", np.array(mean_econ_utility)),
             "utility_econ_per_agent": (["step", "agent"], np.stack(utility_econ_per_agent)),
             "mean_social_utility": ("step", np.array(mean_social_utility)),
@@ -547,10 +824,27 @@ def run_simulation(model: PeatlandABM, steps: int = 50) -> xr.Dataset:
             "adoption_prob_per_agent": (["step", "agent"], np.stack(adoption_prob_per_agent)),
             "capability_per_agent": (["step", "agent"], np.stack(capability_per_agent)),
             "opportunity_per_agent": (["step", "agent"], np.stack(opportunity_per_agent)),
+            "opportunity_adjusted_per_agent": (["step", "agent"], np.stack(opportunity_adjusted_per_agent)),
             "environmental_value_per_agent": (["step", "agent"], np.stack(environmental_value_per_agent)),
             "social_weights_per_agent": (["step", "agent"], np.stack(social_weights_per_agent)),
             "self_belief_per_agent": (["step", "agent"], np.stack(self_belief_per_agent)),
+            "adoption_lock_remaining_per_agent": (["step", "agent"], np.stack(adoption_lock_remaining_per_agent)),
             "expected_profit_change_eur_per_ha": (["step", "agent"], np.stack(expected_profit_change_eur_per_ha)),
+            "consumer_rewetted_share": ("step", np.array(consumer_rewetted_share)),
+            "consumer_rewetted_share_raw": ("step", np.array(consumer_rewetted_share_raw)),
+            "consumer_demand_bias": ("step", np.array(consumer_demand_bias)),
+            "consumer_profit_bonus_nat": ("step", np.array(consumer_profit_bonus_nat)),
+            "consumer_profit_bonus_conv": ("step", np.array(consumer_profit_bonus_conv)),
+            "opportunity_adjusted_mean": ("step", np.array(opportunity_adjusted_mean)),
+            "subsidy_stageA_eur_per_ha": ("step", np.array(subsidy_stageA_eur_per_ha)),
+            "subsidy_stageB_eur_per_ha": ("step", np.array(subsidy_stageB_eur_per_ha)),
+            "subsidy_stageA_norm": ("step", np.array(subsidy_stageA_norm)),
+            "subsidy_stageB_norm": ("step", np.array(subsidy_stageB_norm)),
+            "opportunity_bonus": ("step", np.array(opportunity_bonus)),
+            "subsidy_alpha": ("step", np.array(subsidy_alpha_series)),
+            "subsidy_feasibility_beta": ("step", np.array(subsidy_feasibility_beta_series)),
+            "capability_scale": ("step", np.array(capability_scale_series)),
+            "opportunity_scale": ("step", np.array(opportunity_scale_series)),
         },
         coords={"step": steps_arr, "agent": agent_dim},
     )

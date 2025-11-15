@@ -30,11 +30,13 @@ INTENTION_INTERCEPT_FIXED = 0.0
 
 st.set_page_config(page_title='Peatland ABM', layout='wide')
 
-st.title('Peatland Adoption Model with Intention-Adoption Split')
+st.title("Peatland Adoption Concept Prototype")
 st.write(
-    "Simulate peatland farmers' adoption decisions with an explicit intention stage, "
-    "prospect-theory economics (Rommel et al., 2022), and emissions factors from van Leeuwen et al. (2024)."
+    "This Streamlit prototype explores how peatland farmers might move from intention to adoption."
+    " It combines stylised prospect-theory economics (Rommel et al., 2022) and emissions factors from van Leeuwen et al. (2024)."
+    " Results are illustrative only; input is made-up data and model it not calibrated."
 )
+st.caption("Prototype note: defaults mimic a synthetic dataset.")
 
 if "simulation_complete" not in st.session_state:
     st.session_state["simulation_complete"] = False
@@ -384,4 +386,6 @@ if run_clicked:
     st.caption(f'Outputs saved to `{output_dir}`.')
 
 elif not st.session_state['simulation_complete']:
-    st.info('Adjust parameters in the sidebar and click Run simulation.')
+    st.info(
+        "This is a conceptual prototype for exploratory use. Adjust parameters in the sidebar and click Run simulation to generate illustrative trajectories."
+    )

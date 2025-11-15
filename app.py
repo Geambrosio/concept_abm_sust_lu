@@ -32,10 +32,17 @@ st.set_page_config(page_title='Peatland ABM', layout='wide')
 
 st.title("Peatland Adoption Concept Prototype")
 st.write(
-    "This Streamlit prototype explores how peatland farmers might move from intention to adoption."
-    " It combines stylised prospect-theory economics (Rommel et al., 2022) and emissions factors from van Leeuwen et al. (2024)."
-    " Results are illustrative only; input is made-up data and model it not calibrated."
-)
+"""This Streamlit prototype explores how peatland farmers might move from intention to adoption.
+
+- **Loss aversion λ = 1.2** is taken from Rommel et al. (2022) on Dutch farm behaviour.
+- **Emissions factors** for drained vs. rewetted peatland follow van Leeuwen et al. (2024) work on Dutch peat soils.
+- **Two-stage COM-B logic**:
+- _Stage A_ forms intention from economic (loss-averse on expected profits, linear α subsidy), social, personal-value, and self-belief signals;
+- _Stage B_ applies intention, capability, opportunity, and the (1−α) subsidy share.
+- **Demand feedback**: the exogenous demand for peat-friendly increases over time, affecting next-step profits.
+- **Monte Carlo runs**: repeat seeds to see how adoption, emissions, and policy costs vary under the same stylised rules.
+""")
+
 st.caption("Prototype note: defaults mimic a synthetic dataset.")
 
 if "simulation_complete" not in st.session_state:
@@ -82,7 +89,12 @@ with st.sidebar:
     st.markdown('---')
     st.subheader('Stage A - Intention Formation')
     st.latex(r"I_i = w_{econ} \tilde{U}_{econ,i} + w_{soc} \tilde{U}_{soc,i} + w_{pers} V_i + w_{self} B_i + b")
-    st.latex(r"p^{intent}_i = \sigma\!\left(T \cdot I_i\right)")
+    st.latex(r"\tilde{U}_{econ,i} = \operatorname{norm}_{0-1}\!\left(w^{profit}_i \cdot v(\Delta \pi_i)\right)")
+    st.latex(
+        r"v(\Delta \pi_i) = \begin{cases} (\Delta \pi_i)^{0.88}, & \Delta \pi_i \ge 0 \\ -\lambda |\Delta \pi_i|^{0.88}, & \Delta \pi_i < 0 \end{cases}"
+    )
+    st.latex(r"\tilde{U}_{soc,i} = \operatorname{norm}_{0-1}\!\left(w^{soc}_i \cdot \bar{a}\right)")
+    st.latex(r"p^{intent}_i = \sigma\!\left(T \cdot \left(I_i + \alpha S / S_{\mathrm{ref}}\right)\right)")
     risk_aversion_factor = RISK_AVERSION_FIXED
     st.caption(f"Loss aversion λ (fixed): {risk_aversion_factor:.2f}")
     weight_econ = st.slider('Weight: economic (w_econ)', 0.0, 3.0, 1.0, 0.1)
@@ -101,7 +113,9 @@ with st.sidebar:
 
     st.markdown('---')
     st.subheader('Stage B - Adoption Friction')
-    st.latex(r"p^{adopt}_i = p^{intent}_i \cdot C_i \cdot O_i")
+    st.latex(r"p^{adopt}_i = p^{intent}_i \cdot \hat{C}_i \cdot \hat{O}_i")
+    st.latex(r"\hat{C}_i = \operatorname{clip}(C_i \cdot s_C, 0, 1)")
+    st.latex(r"\hat{O}_i = \operatorname{clip}(O_i \cdot s_O + \beta (1-\alpha) S / S_{\mathrm{ref}}, 0, 1)")
     st.write(
         "Capability and opportunity are loaded from the CSV; use the multipliers below to stress test adoption frictions."
     )

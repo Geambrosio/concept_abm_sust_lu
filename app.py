@@ -32,18 +32,20 @@ st.set_page_config(page_title='Peatland ABM', layout='wide')
 
 st.title("Peatland Adoption Concept Prototype")
 st.write(
-"""This Streamlit prototype explores how peatland farmers might move from intention to adoption.
-
+"""
+This Streamlit prototype explores how peatland farmers might move from intention to adoption.\n
+Key model features:
 - **Loss aversion λ = 1.2** is taken from Rommel et al. (2022) on Dutch farm behaviour.
 - **Emissions factors** for drained vs. rewetted peatland follow van Leeuwen et al. (2024) work on Dutch peat soils.
 - **Two-stage COM-B logic**:
 - _Stage A_ forms intention from economic (loss-averse on expected profits, linear α subsidy), social, personal-value, and self-belief signals;
 - _Stage B_ applies intention, capability, opportunity, and the (1−α) subsidy share.
 - **Demand feedback**: the exogenous demand for peat-friendly increases over time, affecting next-step profits.
-- **Monte Carlo runs**: repeat seeds to see how adoption, emissions, and policy costs vary under the same stylised rules.
-""")
+- **Monte Carlo runs**: repeat seeds to see how adoption, emissions, and policy costs vary under the same stylised rules.\n
 
-st.caption("Prototype note: defaults mimic a synthetic dataset.")
+Built by Dr. Geanderson Ambrósio - Publication list [↗](https://scholar.google.com/citations?user=IO3bQxwAAAAJ&hl=en&authuser=2&oi=ao) - Source code [↗](https://github.com/Geambrosio/concept_abm_sust_lu)
+"""
+)
 
 if "simulation_complete" not in st.session_state:
     st.session_state["simulation_complete"] = False
@@ -51,6 +53,7 @@ if "simulation_complete" not in st.session_state:
 with st.sidebar:
     st.markdown('---')
     st.subheader('Simulation Setup')
+    st.caption(f"This prototype uses a made-up dataset of farmers, land and consumers")
     st.caption(f"Farmers in dataset: {_farmer_count}")
     if _consumer_count:
         st.caption(f"Consumers in dataset: {_consumer_count}")
@@ -401,5 +404,5 @@ if run_clicked:
 
 elif not st.session_state['simulation_complete']:
     st.info(
-        "This is a conceptual prototype for exploratory use. Adjust parameters in the sidebar and click Run simulation to generate illustrative trajectories."
+        "Adjust parameters in the sidebar and click 'Run simulation' to generate illustrative trajectories."
     )

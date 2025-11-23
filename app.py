@@ -30,10 +30,10 @@ INTENTION_INTERCEPT_FIXED = 0.0
 
 st.set_page_config(page_title='Peatland ABM', layout='wide')
 
-st.title("Peatland Adoption Concept Prototype")
+st.title("Conceptual Agent-Based Model Prototype")
 st.write(
 """
-This Streamlit prototype explores how peatland farmers might move from intention to adoption.\n
+This ABM  explores how peatland farmers might move from intention to adoption of sustainable farming.\n
 Key model features:
 - **Loss aversion λ = 1.2** is taken from Rommel et al. (2022) on Dutch farm behaviour.
 - **Emissions factors** for drained vs. rewetted peatland follow van Leeuwen et al. (2024) work on Dutch peat soils.
